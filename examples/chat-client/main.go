@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/EddisonKing/messagestream"
+	"github.com/EddisonKing/message-stream"
 )
 
 var ChatMessage = messagestream.MessageType("chat")

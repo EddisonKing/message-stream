@@ -1,4 +1,4 @@
-module github.com/EddisonKing/messagestream
+module github.com/EddisonKing/message-stream
 
 go 1.24.2
 

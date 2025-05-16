@@ -4,7 +4,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/EddisonKing/messagestream"
+	"github.com/EddisonKing/message-stream"
 )
 
 var (

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/EddisonKing/messagestream"
+	"github.com/EddisonKing/message-stream"
 
 	"github.com/stretchr/testify/assert"
 )
