@@ -59,7 +59,7 @@ func (m *Message) serialiseMetadata() ([]byte, error) {
 
 // Create a new Message to be sent via a Message Stream.
 // The message will be encrypted by the Message Stream when sent using the recipient's public key.
-func NewMessage(t MessageType, metadata map[string]any, payload any) (*Message, error) {
+func newMessage(t MessageType, metadata map[string]any, payload any) (*Message, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err

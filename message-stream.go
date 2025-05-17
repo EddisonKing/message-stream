@@ -101,6 +101,24 @@ func generateNonce() (int, error) {
 	return int(nonce.Int64()), nil
 }
 
+func (ms *MessageStream) newNonce() (int, error) {
+	var n int
+	for {
+		nonce, err := generateNonce()
+		if err != nil {
+			return 0, err
+		}
+
+		if err = storeNonce(&ms.sentNonceHistory, nonce); err != nil {
+			continue
+		}
+
+		n = nonce
+		break
+	}
+	return n, nil
+}
+
 const nonceTTL time.Duration = time.Minute * 15 // Not sure about the time, this should be relative to the time it might take to randomly generate the same nonce again
 
 func storeNonce(nonceHistory *map[int]time.Time, nonce int) error {
@@ -122,24 +140,31 @@ func (ms *MessageStream) Close() {
 
 // Sends a Message on the io.Writer portion of the Message Stream.
 //
-// Only returns an error if it fails to write data. Other errors are returned in the Message Stream's error channel.
-func (ms *MessageStream) SendMessage(m *Message) error {
-	var n int
-	for {
-		nonce, err := generateNonce()
-		if err != nil {
-			ms.errors <- err
-			return nil
-		}
-		err = storeNonce(&ms.sentNonceHistory, nonce)
-		if err != nil {
-			continue
-		}
-		n = nonce
-		break
+// Returns an error if it fails serialise the metadata or payload, write data to the underlying `io.Writer` or generate a nonce.
+func (ms *MessageStream) SendMessage(t MessageType, metadata map[string]any, payload any) error {
+	m, err := newMessage(t, metadata, payload)
+	if err != nil {
+		return err
+	}
+
+	n, err := ms.newNonce()
+	if err != nil {
+		return err
 	}
 
 	return ms.sendMessage(createMessageHeader(0, n, nil, ms.tgtPubKey), m)
+}
+
+// Forward an existing Message. This is useful in a situation where multiple Message Streams are being used and a received Message needs to be passed to a different Message Stream.
+//
+// Returns an error if it fails to write data to the underlying `io.Writer` or generate a nonce.
+func (ms *MessageStream) ForwardMessage(msg *Message) error {
+	n, err := ms.newNonce()
+	if err != nil {
+		return err
+	}
+
+	return ms.sendMessage(createMessageHeader(0, n, nil, ms.tgtPubKey), msg)
 }
 
 // Returns a channel where incoming Messages can be received.
