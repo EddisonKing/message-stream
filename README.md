@@ -94,7 +94,6 @@ Effectively, this is intended for alerting potentially transient errors.
 Have a look at the chat client/server implementation using Message Streams in the `./examples` folder. Keep in mind that a real implementation would need more work to handle network resiliency such as notifying of a disconnect, etc.
 
 ## Improvements & Known Issues
-1. The tests use a `bytes.Buffer` for ease of test setup. This isn't a real use case and should be a network connection. The tests will sometimes stop suddenly after about ~20 tries due to a race condition between reading and writing to the `bytes.Buffer`.
-2. Performance at scale was not an initial requirement of this project and no testing has been done on how scalable and fast this protocol actually is. 
-3. It uses `encoding/json` to serialise and deserialise the metadata and payload. This is likely having a performance impact, both on the process of serialisation, as well as network bloat with the resultant size in bytes.
-4. In the read loop, the Message Stream waits for a sequence of "magic bytes" to determine Message boundaries. It disregards everything it reads until it sees this sequence. Losing data is not ideal, but it would be impossible to reconstruct a full message otherwise.
+1. Performance at scale was not an initial requirement of this project and no testing has been done on how scalable and fast this protocol actually is. 
+2. It uses `encoding/json` to serialise and deserialise the metadata and payload. This is likely having a performance impact, both on the process of serialisation, as well as network bloat with the resultant size in bytes.
+3. In the read loop, the Message Stream waits for a sequence of "magic bytes" to determine Message boundaries. It disregards everything it reads until it sees this sequence. Losing data is not ideal, but it would be impossible to reconstruct a full message otherwise.
