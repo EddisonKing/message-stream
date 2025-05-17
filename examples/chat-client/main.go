@@ -18,12 +18,12 @@ func main() {
 	log.Printf("Connecting to Server...\n")
 	conn, err := net.Dial("tcp", "127.0.0.1:4547")
 	if err != nil {
-		log.Fatalf("failed to connect to Server: %s\n", err)
+		log.Fatalf("Failed to connect to Server: %s\n", err)
 	}
 
 	stream, err := messagestream.New(conn)
 	if err != nil {
-		log.Fatalf("failed to negotiate message stream with server: %s\n", err)
+		log.Fatalf("Failed to negotiate message stream with server: %s\n", err)
 	}
 
 	buffer := bufio.NewReader(os.Stdin)
@@ -31,7 +31,7 @@ func main() {
 	fmt.Printf("Username: ")
 	username, err := buffer.ReadString('\n')
 	if err != nil {
-		log.Fatalf("failed to read from stdin: %s", err)
+		log.Fatalf("Failed to read from stdin: %s", err)
 	}
 	username = strings.TrimSpace(username)
 	fmt.Printf("\n")
@@ -47,7 +47,7 @@ func main() {
 			metadata := messagestream.ExtractMetadata(msg)
 			chat, err := messagestream.ExtractPayload[string](msg)
 			if err != nil {
-				log.Printf("failed to extract message payload: %s\n", err)
+				log.Printf("Failed to extract message payload: %s\n", err)
 				continue
 			}
 
@@ -77,16 +77,14 @@ func main() {
 			if err == io.EOF {
 				continue
 			}
-			log.Fatalf("failed to read from stdin: %s", err)
+			log.Fatalf("Failed to read from stdin: %s", err)
 		}
 		line = strings.TrimSpace(line)
 
-		msg, err := messagestream.NewMessage(ChatMessage, metadata, line)
+		err = stream.SendMessage(ChatMessage, metadata, line)
 		if err != nil {
-			log.Printf("failed to create message: %s\n", err)
+			log.Printf("Failed to send message: %s\n", err)
 			continue
 		}
-
-		stream.SendMessage(msg)
 	}
 }

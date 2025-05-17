@@ -1,8 +1,8 @@
 package tests
 
 import (
-	"bytes"
 	"log"
+	"net"
 	"testing"
 	"time"
 
@@ -11,28 +11,74 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+var server net.Listener
+
+// Echo Server for test setup
+func getConn() (net.Conn, error) {
+	if server == nil {
+		listener, err := net.Listen("tcp", "127.0.0.2:9190")
+		if err != nil {
+			return nil, err
+		}
+
+		server = listener
+		go func() {
+			for {
+				client, err := server.Accept()
+				if err != nil {
+					panic(err)
+				}
+
+				clientMsgStream, err := messagestream.New(client)
+				if err != nil {
+					panic(err)
+				}
+
+				go func() {
+					for msg := range clientMsgStream.Receiver() {
+						// Simple echo server, forward message back
+						if err := clientMsgStream.ForwardMessage(msg); err != nil {
+							panic(err)
+						}
+					}
+				}()
+			}
+		}()
+	}
+
+	conn, err := net.Dial("tcp", "127.0.0.2:9190")
+	if err != nil {
+		return nil, err
+	}
+
+	return conn, err
+}
+
 const TestMessage = messagestream.MessageType("test")
 
-func TestFullMessageTransferLocally(t *testing.T) {
+func TestFullMessageTransfer(t *testing.T) {
+	conn, err := getConn()
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
 	header := map[string]any{
 		"creation_time": time.Now().UTC(),
 	}
 	payload := "Hello World!"
-	msg, err := messagestream.NewMessage(TestMessage, header, payload)
+
+	msgStream, err := messagestream.New(conn)
 	assert.Nil(t, err)
 	if err != nil {
 		return
 	}
 
-	buffer := bytes.NewBuffer(nil)
-
-	msgStream, err := messagestream.New(buffer)
+	err = msgStream.SendMessage(TestMessage, header, payload)
 	assert.Nil(t, err)
 	if err != nil {
 		return
 	}
-
-	msgStream.SendMessage(msg)
 
 	anyErrors := false
 	go func() {
@@ -68,25 +114,28 @@ func TestFullMessageTransferLocally(t *testing.T) {
 	assert.False(t, anyErrors)
 }
 
-func TestMetadataOnlyMessageTransferLocally(t *testing.T) {
+func TestMetadataOnlyMessageTransfer(t *testing.T) {
+	conn, err := getConn()
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
 	header := map[string]any{
 		"creation_time": time.Now().UTC(),
 	}
-	msg, err := messagestream.NewMessage(TestMessage, header, nil)
+
+	msgStream, err := messagestream.New(conn)
 	assert.Nil(t, err)
 	if err != nil {
 		return
 	}
 
-	buffer := bytes.NewBuffer(nil)
-
-	msgStream, err := messagestream.New(buffer)
+	err = msgStream.SendMessage(TestMessage, header, nil)
 	assert.Nil(t, err)
 	if err != nil {
 		return
 	}
-
-	msgStream.SendMessage(msg)
 
 	anyErrors := false
 	go func() {
@@ -114,23 +163,26 @@ func TestMetadataOnlyMessageTransferLocally(t *testing.T) {
 	assert.False(t, anyErrors)
 }
 
-func TestPayloadOnlyMessageTransferLocally(t *testing.T) {
+func TestPayloadOnlyMessageTransfer(t *testing.T) {
+	conn, err := getConn()
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
 	payload := "Hello World!"
-	msg, err := messagestream.NewMessage(TestMessage, nil, payload)
+
+	msgStream, err := messagestream.New(conn)
 	assert.Nil(t, err)
 	if err != nil {
 		return
 	}
 
-	buffer := bytes.NewBuffer(nil)
-
-	msgStream, err := messagestream.New(buffer)
+	err = msgStream.SendMessage(TestMessage, nil, payload)
 	assert.Nil(t, err)
 	if err != nil {
 		return
 	}
-
-	msgStream.SendMessage(msg)
 
 	anyErrors := false
 	go func() {

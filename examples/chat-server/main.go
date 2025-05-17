@@ -34,7 +34,7 @@ func main() {
 
 			go func() {
 				for _, client := range clients {
-					client.SendMessage(msg)
+					client.ForwardMessage(msg)
 				}
 			}()
 		}
