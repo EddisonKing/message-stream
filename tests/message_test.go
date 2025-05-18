@@ -2,7 +2,9 @@ package tests
 
 import (
 	"log"
+	// "log/slog"
 	"net"
+	// "os"
 	"testing"
 	"time"
 
@@ -12,6 +14,13 @@ import (
 )
 
 var server net.Listener
+
+// func init() {
+// 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+// 		Level: slog.LevelDebug,
+// 	}))
+// 	messagestream.SetLogger(logger)
+// }
 
 // Echo Server for test setup
 func getConn() (net.Conn, error) {
