@@ -78,6 +78,16 @@ Whereas payload is the actual message to be sent, metadata is a way to apply add
 
 This will error if unable to serialize either the metadata or payload. A `nil` can be passed to both the `metadata` and `payload` field, effectively being an empty Message that can be treated by the receiver like an event.
 
+### Logging
+```go
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+	messagestream.SetLogger(logger)
+```
+
+The Message Stream library surfaces a `SetLogger` function at the package level allowing for a `slog.Logger` to be passed in for logging. No payloads are ever logged for security reasons. Message signatures and hashes are logged for debugging. At `Debug` log level, the logs are verbose and numerous and will slow `stdout` considerably. 
+
 ### Handling Errors
 ```go
 // 
