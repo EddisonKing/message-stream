@@ -24,7 +24,7 @@ func main() {
 	go func() {
 		log.Printf("Waiting for client messages...\n")
 		for msg := range messages {
-			metadata := messagestream.ExtractMetadata(msg)
+			_, metadata, _ := messagestream.Unwrap[any](msg)
 			username, exists := metadata["username"]
 			if !exists {
 				username = "unknown"
