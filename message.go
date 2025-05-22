@@ -1,21 +1,10 @@
 package messagestream
 
 import (
-	"encoding/binary"
 	"encoding/json"
 )
 
-func intToBytes(i int) []byte {
-	b := make([]byte, 4)
-	binary.BigEndian.PutUint32(b, uint32(i))
-	return b
-}
-
-func bytesToInt(b []byte) int {
-	return int(binary.BigEndian.Uint32(b))
-}
-
-// Represents a Message Type. Ultimately, just a string.
+// Represents a Message Type.
 type MessageType string
 
 // Represents a Message that can be sent on a Message Stream. Most likely, you want
@@ -43,7 +32,7 @@ func newMessage(t MessageType, metadata map[string]any, payload any) (*Message, 
 
 // Unwraps the Message into it's parts, the payload and the metadata.
 // Returns the payload as the type P. For example, if a struct called Payload is sent,
-// then ExtractPayload[Payload](someMessage) will return an instance of the Payload struct
+// then Unwrap[Payload](someMessage) will return an instance of the Payload struct
 // that was sent. Attempts to deserialize into an incorrect type will result in an error.
 func Unwrap[P any](msg *Message) (P, map[string]any, error) {
 	var payload P

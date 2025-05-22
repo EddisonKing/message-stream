@@ -23,7 +23,7 @@ type MessageStream struct {
 	receiver             io.Reader
 	output               chan *Message
 	errors               chan error
-	closed               bool
+	done                 chan bool
 	receivedNonceHistory map[int]time.Time
 	sentNonceHistory     map[int]time.Time
 	sendMsgFn            func(Message, io.Writer) (int, error)
@@ -39,7 +39,7 @@ func New(rw io.ReadWriter) (*MessageStream, error) {
 
 // Create a new Message Stream from an individual io.Reader and io.Writer.
 //
-// Returns a reference to the Message Stream, a channel to receive Messages on and a channel to read any errors on.
+// Returns a reference to the Message Stream, or an error if it fails to negotiate with the target at the end of the `io.Writer`.
 func NewFrom(sender io.Writer, receiver io.Reader) (*MessageStream, error) {
 	otw.SetLogger(logger)
 
@@ -58,10 +58,10 @@ func NewFrom(sender io.Writer, receiver io.Reader) (*MessageStream, error) {
 		sender:               sender,
 		receiver:             receiver,
 		output:               output,
-		closed:               false,
 		errors:               errs,
 		receivedNonceHistory: make(map[int]time.Time),
 		sentNonceHistory:     make(map[int]time.Time),
+		done:                 make(chan bool, 1),
 	}
 
 	// Connect message containing this end's public key
@@ -73,6 +73,7 @@ func NewFrom(sender io.Writer, receiver io.Reader) (*MessageStream, error) {
 		UseTimeout(time.Second * 15).
 		Build()
 
+	logger.Debug("Sending public key", "StreamID", id)
 	if _, err := keyExchangeSend(*msgStream.pubKey, sender); err != nil {
 		logger.Error("Failed to send public key during public key exchange", "Error", err)
 		return nil, err
@@ -106,14 +107,26 @@ func NewFrom(sender io.Writer, receiver io.Reader) (*MessageStream, error) {
 
 	go func() {
 		logger.Debug("Waiting for Messages from client...", "StreamID", id)
-		for !msgStream.closed {
-			msg, err := msgStream.receiveMessage()
-			if err != nil {
-				msgStream.errors <- err
-				continue
+		for {
+			result := make(chan *Message, 1)
+			defer close(result)
+
+			go func() {
+				msg, err := msgStream.receiveMessage()
+				if err != nil {
+					msgStream.errors <- err
+					return
+				}
+				logger.Info("Received Message", "Type", msg.Type, "StreamID", id)
+				result <- msg
+			}()
+
+			select {
+			case <-msgStream.done:
+				return
+			case msg := <-result:
+				output <- msg
 			}
-			logger.Info("Received Message", "Type", msg.Type, "StreamID", id)
-			output <- msg
 		}
 	}()
 
@@ -169,7 +182,7 @@ func (ms *MessageStream) checkReceivedNonce(n int) bool {
 // Terminates any internal channels preventing sending and receiving on this Message Stream.
 func (ms *MessageStream) Close() {
 	logger.Info("Closing Message Stream", "StreamID", ms.id)
-	ms.closed = true
+	ms.done <- true
 	close(ms.output)
 }
 
@@ -212,6 +225,7 @@ func (ms *MessageStream) sendMessage(m *Message) error {
 	if _, err := ms.sendMsgFn(*m, ms.sender); err != nil {
 		return err
 	}
+
 	return nil
 }
 
