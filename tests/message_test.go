@@ -2,9 +2,9 @@ package tests
 
 import (
 	"log"
-	// "log/slog"
+	"log/slog"
 	"net"
-	// "os"
+	"os"
 	"testing"
 	"time"
 
@@ -15,12 +15,12 @@ import (
 
 var server net.Listener
 
-// func init() {
-// 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-// 		Level: slog.LevelDebug,
-// 	}))
-// 	messagestream.SetLogger(logger)
-// }
+func init() {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelError,
+	}))
+	messagestream.SetLogger(logger)
+}
 
 // Echo Server for test setup
 func getConn() (net.Conn, error) {
@@ -105,7 +105,7 @@ func TestFullMessageTransfer(t *testing.T) {
 	}
 	assert.Equal(t, TestMessage, sentMsg.Type)
 
-	sentPayload, err := messagestream.ExtractPayload[string](sentMsg)
+	sentPayload, sentMetadata, err := messagestream.Unwrap[string](sentMsg)
 	assert.Nil(t, err)
 	if err != nil {
 		return
@@ -113,7 +113,6 @@ func TestFullMessageTransfer(t *testing.T) {
 
 	assert.Equal(t, payload, sentPayload)
 
-	sentMetadata := messagestream.ExtractMetadata(sentMsg)
 	assert.NotNil(t, sentMetadata)
 	if sentMetadata != nil {
 		_, exists := sentMetadata["creation_time"]
@@ -162,7 +161,9 @@ func TestMetadataOnlyMessageTransfer(t *testing.T) {
 	}
 	assert.Equal(t, TestMessage, sentMsg.Type)
 
-	sentMetadata := messagestream.ExtractMetadata(sentMsg)
+	_, sentMetadata, err := messagestream.Unwrap[any](sentMsg)
+	assert.Nil(t, err)
+
 	assert.NotNil(t, sentMetadata)
 	if sentMetadata != nil {
 		_, exists := sentMetadata["creation_time"]
@@ -209,7 +210,7 @@ func TestPayloadOnlyMessageTransfer(t *testing.T) {
 	}
 	assert.Equal(t, TestMessage, sentMsg.Type)
 
-	sentPayload, err := messagestream.ExtractPayload[string](sentMsg)
+	sentPayload, _, err := messagestream.Unwrap[string](sentMsg)
 	assert.Nil(t, err)
 	if err != nil {
 		return

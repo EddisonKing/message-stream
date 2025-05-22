@@ -44,8 +44,7 @@ func main() {
 
 	go func() {
 		for msg := range stream.Receiver() {
-			metadata := messagestream.ExtractMetadata(msg)
-			chat, err := messagestream.ExtractPayload[string](msg)
+			chat, metadata, err := messagestream.Unwrap[string](msg)
 			if err != nil {
 				log.Printf("Failed to extract message payload: %s\n", err)
 				continue

@@ -8,8 +8,6 @@ Messages are encrypted with the recipient's public key so only they can read it.
 Messages are Typed and can easily be used in `switch` statements on the receiving end of the Message Stream. 
 Messages also contain additional optional metadata for more flexibility. E.g. I want to add a creation timestamp to my message, but I don't want to add that as a property to the struct being sent as the Message payload.
 
-**NOTE:** This library works, but I am aware of several issues and improvements I'd like to make to it before considering it production worthy.
-
 ## Usage
 
 ### Getting Started
@@ -56,8 +54,7 @@ The `io.ReaderWriter`, `io.Reader` and `io.Writer` parts given to a Message Stre
 for msg := range stream.Receiver() {
   switch msg.Type {
     case TestMessage:
-      payload, err := ms.ExtractPayload[string](msg)
-      metadata := ms.ExtractMetadata(msg)
+      payload, metadata, err := ms.Unwrap[string](msg)
       // Do something with the msg
       // ...
   }
@@ -102,8 +99,3 @@ Effectively, this is intended for alerting potentially transient errors.
 
 ### Examples
 Have a look at the chat client/server implementation using Message Streams in the `./examples` folder. Keep in mind that a real implementation would need more work to handle network resiliency such as notifying of a disconnect, etc.
-
-## Improvements & Known Issues
-1. Performance at scale was not an initial requirement of this project and no testing has been done on how scalable and fast this protocol actually is. 
-2. It uses `encoding/json` to serialise and deserialise the metadata and payload. This is likely having a performance impact, both on the process of serialisation, as well as network bloat with the resultant size in bytes.
-3. In the read loop, the Message Stream waits for a sequence of "magic bytes" to determine Message boundaries. It disregards everything it reads until it sees this sequence. Losing data is not ideal, but it would be impossible to reconstruct a full message otherwise.
