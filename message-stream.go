@@ -28,33 +28,29 @@ type MessageStream struct {
 	sentNonceHistory     map[int]time.Time
 	sendMsgFn            func(Message, io.Writer) (int, error)
 	readMsgFn            func(io.Reader) (Message, int, error)
+	connected            bool
 }
 
 // Create a new Message Stream from anything that implements io.ReadWriter.
-//
-// Returns a reference to the Message Stream, a channel to receive Messages on and a channel to read any errors on.
-func New(rw io.ReadWriter) (*MessageStream, error) {
+func New(rw io.ReadWriter) *MessageStream {
 	return NewFrom(rw, rw)
 }
 
 // Create a new Message Stream from an individual io.Reader and io.Writer.
 //
-// Returns a reference to the Message Stream, or an error if it fails to negotiate with the target at the end of the `io.Writer`.
-func NewFrom(sender io.Writer, receiver io.Reader) (*MessageStream, error) {
+// Use `SetKeys()` to specify that encryption should be used and pass in the keys
+func NewFrom(sender io.Writer, receiver io.Reader) *MessageStream {
 	otw.SetLogger(logger)
 
 	id := uuid.New()
 
 	logger.Info("Creating a new Message Stream", "StreamID", id)
-	privKey, pubKey := generateRSAKeyPair()
 
 	output := make(chan *Message, 50)
 	errs := make(chan error, 30)
 
 	msgStream := &MessageStream{
 		id:                   id,
-		pubKey:               pubKey,
-		privKey:              privKey,
 		sender:               sender,
 		receiver:             receiver,
 		output:               output,
@@ -62,76 +58,110 @@ func NewFrom(sender io.Writer, receiver io.Reader) (*MessageStream, error) {
 		receivedNonceHistory: make(map[int]time.Time),
 		sentNonceHistory:     make(map[int]time.Time),
 		done:                 make(chan bool, 1),
+		connected:            false,
+	}
+
+	return msgStream
+}
+
+// This enables encryption on the Message Stream. Pass in the private and public RSA keys. The public key will be transferred to the client on Connect.
+func (ms *MessageStream) SetKeys(privKey *rsa.PrivateKey, pubKey *rsa.PublicKey) {
+	logger.Debug("Setting Private and Public Keys", "PubKey", pubKey)
+	ms.privKey = privKey
+	ms.pubKey = pubKey
+}
+
+// Connect negotiates the Message Stream with the client. If you attempt to SendMessage before Connect is called, Connect will be called automatically.
+//
+// This negotation includes the public key exchange that enables secure Message transfer.
+// An error will be returned if it is unable to exchnage public keys.
+func (ms *MessageStream) Connect() error {
+	if ms.connected {
+		return nil
 	}
 
 	// Connect message containing this end's public key
-	logger.Debug("Exchanging public keys", "StreamID", id)
-	keyExchangeReceive, keyExchangeSend := otw.New[rsa.PublicKey]().
-		UseJSONEncoding().
-		UseNonce(msgStream.newNonce, msgStream.checkReceivedNonce).
-		UseCompression().
-		UseTimeout(time.Second * 15).
-		Build()
+	if ms.privKey != nil && ms.pubKey != nil {
+		logger.Debug("Exchanging public keys", "StreamID", ms.id)
+		keyExchangeReceive, keyExchangeSend := otw.New[rsa.PublicKey]().
+			UseJSONEncoding().
+			UseNonce(ms.newNonce, ms.checkReceivedNonce).
+			UseCompression().
+			UseTimeout(time.Second * 15).
+			Build()
 
-	logger.Debug("Sending public key", "StreamID", id)
-	if _, err := keyExchangeSend(*msgStream.pubKey, sender); err != nil {
-		logger.Error("Failed to send public key during public key exchange", "Error", err)
-		return nil, err
+		logger.Debug("Sending public key", "StreamID", ms.id)
+		if _, err := keyExchangeSend(*ms.pubKey, ms.sender); err != nil {
+			logger.Error("Failed to send public key during public key exchange", "Error", err)
+			return err
+		}
+
+		// Receive target's public key
+		logger.Debug("Waiting for public key from client...", "StreamID", ms.id)
+		receivedPubKey, _, err := keyExchangeReceive(ms.receiver)
+		if err != nil {
+			logger.Error("Failed to recieve public key during public key exchange", "Error", err)
+			return err
+		}
+
+		logger.Debug("Received public key from client", "StreamID", ms.id)
+		ms.tgtPubKey = &receivedPubKey
+
+		rmf, smf := otw.New[Message]().
+			UseJSONEncoding().
+			UseNonce(ms.newNonce, ms.checkReceivedNonce).
+			UseAsymmetricEncryption(func() *rsa.PublicKey {
+				return ms.tgtPubKey
+			}, func() *rsa.PrivateKey {
+				return ms.privKey
+			}).
+			UseCompression().
+			UseTimeout(time.Second * 15).
+			Build()
+
+		ms.readMsgFn = rmf
+		ms.sendMsgFn = smf
+	} else {
+		logger.Warn("No keys set, Message will be sent unencrypted")
+		rmf, smf := otw.New[Message]().
+			UseJSONEncoding().
+			UseNonce(ms.newNonce, ms.checkReceivedNonce).
+			UseCompression().
+			UseTimeout(time.Second * 15).
+			Build()
+
+		ms.readMsgFn = rmf
+		ms.sendMsgFn = smf
 	}
-
-	// Receive target's public key
-	logger.Debug("Waiting for public key from client...", "StreamID", id)
-	receivedPubKey, _, err := keyExchangeReceive(receiver)
-	if err != nil {
-		logger.Error("Failed to recieve public key during public key exchange", "Error", err)
-		return nil, err
-	}
-
-	logger.Debug("Received public key from client", "StreamID", id)
-	msgStream.tgtPubKey = &receivedPubKey
-
-	rmf, smf := otw.New[Message]().
-		UseJSONEncoding().
-		UseNonce(msgStream.newNonce, msgStream.checkReceivedNonce).
-		UseAsymmetricEncryption(func() *rsa.PublicKey {
-			return msgStream.tgtPubKey
-		}, func() *rsa.PrivateKey {
-			return privKey
-		}).
-		UseCompression().
-		UseTimeout(time.Second * 15).
-		Build()
-
-	msgStream.readMsgFn = rmf
-	msgStream.sendMsgFn = smf
 
 	go func() {
-		logger.Debug("Waiting for Messages from client...", "StreamID", id)
+		logger.Debug("Waiting for Messages from client...", "StreamID", ms.id)
 		for {
 			result := make(chan *Message, 1)
 			defer close(result)
 
 			go func() {
-				msg, err := msgStream.receiveMessage()
+				msg, err := ms.receiveMessage()
 				if err != nil {
-					msgStream.errors <- err
+					ms.errors <- err
 					return
 				}
-				logger.Info("Received Message", "Type", msg.Type, "StreamID", id)
+				logger.Info("Received Message", "Type", msg.Type, "StreamID", ms.id)
 				result <- msg
 			}()
 
 			select {
-			case <-msgStream.done:
+			case <-ms.done:
 				return
 			case msg := <-result:
-				output <- msg
+				ms.output <- msg
 			}
 		}
 	}()
 
-	logger.Info("Message Stream successfully negotiated", "StreamID", id)
-	return msgStream, nil
+	logger.Info("Message Stream successfully negotiated", "StreamID", ms.id)
+	ms.connected = true
+	return nil
 }
 
 func (ms *MessageStream) generateNonce() int {
@@ -184,12 +214,21 @@ func (ms *MessageStream) Close() {
 	logger.Info("Closing Message Stream", "StreamID", ms.id)
 	ms.done <- true
 	close(ms.output)
+	ms.connected = false
 }
 
 // Sends a Message on the io.Writer portion of the Message Stream.
 //
 // Returns an error if it fails serialise the metadata or payload, write data to the underlying `io.Writer` or generate a nonce.
 func (ms *MessageStream) SendMessage(t MessageType, metadata map[string]any, payload any) error {
+	if !ms.connected {
+		logger.Debug("SendMessage called before Message Stream was connected; automatically calling Connect")
+		if err := ms.Connect(); err != nil {
+			logger.Error("Failed to negotiate Mesage Stream during Connect", "Error", err)
+			return err
+		}
+	}
+
 	logger.Info("Preparing to send Message", "StreamID", ms.id)
 	m, err := newMessage(t, metadata, payload)
 	if err != nil {

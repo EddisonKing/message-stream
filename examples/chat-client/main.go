@@ -9,10 +9,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/EddisonKing/message-stream"
+	ms "github.com/EddisonKing/message-stream"
 )
 
-var ChatMessage = messagestream.MessageType("chat")
+var ChatMessage = ms.MessageType("chat")
 
 func main() {
 	log.Printf("Connecting to Server...\n")
@@ -21,8 +21,9 @@ func main() {
 		log.Fatalf("Failed to connect to Server: %s\n", err)
 	}
 
-	stream, err := messagestream.New(conn)
-	if err != nil {
+	stream := ms.New(conn)
+	stream.SetKeys(ms.GenerateRSAKeyPair())
+	if err = stream.Connect(); err != nil {
 		log.Fatalf("Failed to negotiate message stream with server: %s\n", err)
 	}
 
@@ -44,7 +45,7 @@ func main() {
 
 	go func() {
 		for msg := range stream.Receiver() {
-			chat, metadata, err := messagestream.Unwrap[string](msg)
+			chat, metadata, err := ms.Unwrap[string](msg)
 			if err != nil {
 				log.Printf("Failed to extract message payload: %s\n", err)
 				continue
