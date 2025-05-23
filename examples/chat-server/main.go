@@ -4,12 +4,12 @@ import (
 	"log"
 	"net"
 
-	"github.com/EddisonKing/message-stream"
+	ms "github.com/EddisonKing/message-stream"
 )
 
 var (
-	clients  = make([]*messagestream.MessageStream, 0)
-	messages = make(chan *messagestream.Message, 100)
+	clients  = make([]*ms.MessageStream, 0)
+	messages = make(chan *ms.Message, 100)
 )
 
 func main() {
@@ -24,7 +24,7 @@ func main() {
 	go func() {
 		log.Printf("Waiting for client messages...\n")
 		for msg := range messages {
-			_, metadata, _ := messagestream.Unwrap[any](msg)
+			_, metadata, _ := ms.Unwrap[any](msg)
 			username, exists := metadata["username"]
 			if !exists {
 				username = "unknown"
@@ -49,8 +49,9 @@ func main() {
 		}
 		log.Printf("New client from %s.\n", conn.RemoteAddr().String())
 
-		stream, err := messagestream.New(conn)
-		if err != nil {
+		stream := ms.New(conn)
+		stream.SetKeys(ms.GenerateRSAKeyPair())
+		if err = stream.Connect(); err != nil {
 			log.Printf("failed to negatiate message stream with client: %v\n", err)
 			continue
 		}

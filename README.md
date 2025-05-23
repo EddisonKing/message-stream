@@ -34,20 +34,29 @@ Message Types are strings that make it easier to differentiate Messages as they 
 
 ### Creating a new Message Stream
 ```go
-stream, err := ms.New(rw)
+stream := ms.New(rw)
 // OR
-stream, err := ms.NewFrom(r, w)
+stream := ms.NewFrom(r, w)
 ```
 
 The most common way to create a MessageStream is to call `New` and pass in anything that implements `io.ReadWriter`, however it is also possible to call `NewFrom` which takes an `io.Reader` and `io.Writer`.
-
-Errors will occur if there is a problem generating an RSA private/public key, or more likely, there is a problem negotiating the initial connection with the target. ex. the other side is not using a MessageStream.
 
 Message Streams support the `Close` operation which does multiple things, including calling close on the underlying channels for receiving Messages and internally generated errors, as well as closing the `io.Reader` and `io.Writer`. 
 
 The `io.ReaderWriter`, `io.Reader` and `io.Writer` parts given to a Message Stream should not be used by the caller after the MessageStream struct has been created. Writes and reads from the underlying parts could result in undefined behaviour.
 
 **Note:** For added security when intending to use a `net.Conn` to create a Message Stream, it is best to use `crypto/tls` (from https://pkg.go.dev/crypto/tls), and wrap the connection in TLS, ideally with a valid Certificate, although self-signed in a controlled environment is good too. The TLS layer will prevent Man-in-the-middle attacks, as well as hiding the byte boundaries between already encrypted Message Stream Messages. Message Stream already uses nonces to prevent replay attacks, but encrypting the entirety of the traffic, not just payloads and metadata, is much more secure.
+
+### Enabling Encryption
+Encryption is not enabled by default since RSA private and public keys need to be provided.
+```go
+stream.SetKeys(privateKey, publicKey)
+err := stream.Connect()
+```
+
+You should call `Connect()` after `SetKeys()` so that the Message Stream performs a public key exchange. `Connect()` will be called automatically if keys are set and you attempt to `SendMessage()`.
+
+Errors will occur if there is a problem generating an RSA private/public key, or more likely, there is a problem negotiating the initial connection with the target. ex. the other side is not using a MessageStream.
 
 ### Receiving Messages
 ```go
