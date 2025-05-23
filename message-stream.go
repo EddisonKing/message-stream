@@ -26,8 +26,8 @@ type MessageStream struct {
 	done                 chan bool
 	receivedNonceHistory map[int]time.Time
 	sentNonceHistory     map[int]time.Time
-	sendMsgFn            func(Message, io.Writer) (int, error)
-	readMsgFn            func(io.Reader) (Message, int, error)
+	sendMsgFn            func(Message, io.Writer) error
+	readMsgFn            func(io.Reader) (Message, error)
 	connected            bool
 }
 
@@ -71,6 +71,11 @@ func (ms *MessageStream) SetKeys(privKey *rsa.PrivateKey, pubKey *rsa.PublicKey)
 	ms.pubKey = pubKey
 }
 
+// Returns the RSA Public Key that was negotiate from the other end of the Message Stream if encryption was used. The key is nil if no Public Key was sent.
+func (ms *MessageStream) GetRecipientPublicKey() *rsa.PublicKey {
+	return ms.tgtPubKey
+}
+
 // Connect negotiates the Message Stream with the client. If you attempt to SendMessage before Connect is called, Connect will be called automatically.
 //
 // This negotation includes the public key exchange that enables secure Message transfer.
@@ -91,14 +96,14 @@ func (ms *MessageStream) Connect() error {
 			Build()
 
 		logger.Debug("Sending public key", "StreamID", ms.id)
-		if _, err := keyExchangeSend(*ms.pubKey, ms.sender); err != nil {
+		if err := keyExchangeSend(*ms.pubKey, ms.sender); err != nil {
 			logger.Error("Failed to send public key during public key exchange", "Error", err)
 			return err
 		}
 
 		// Receive target's public key
 		logger.Debug("Waiting for public key from client...", "StreamID", ms.id)
-		receivedPubKey, _, err := keyExchangeReceive(ms.receiver)
+		receivedPubKey, err := keyExchangeReceive(ms.receiver)
 		if err != nil {
 			logger.Error("Failed to recieve public key during public key exchange", "Error", err)
 			return err
@@ -261,7 +266,7 @@ func (ms *MessageStream) Errors() <-chan error {
 
 func (ms *MessageStream) sendMessage(m *Message) error {
 	logger.Debug("Sending message", "Type", m.Type, "StreamID", ms.id)
-	if _, err := ms.sendMsgFn(*m, ms.sender); err != nil {
+	if err := ms.sendMsgFn(*m, ms.sender); err != nil {
 		return err
 	}
 
@@ -270,7 +275,7 @@ func (ms *MessageStream) sendMessage(m *Message) error {
 
 func (ms *MessageStream) receiveMessage() (*Message, error) {
 	logger.Debug("Beginning Message receive...", "StreamID", ms.id)
-	msg, _, err := ms.readMsgFn(ms.receiver)
+	msg, err := ms.readMsgFn(ms.receiver)
 	if err != nil {
 		return nil, err
 	}
