@@ -275,9 +275,19 @@ func (ms *MessageStream) sendMessage(m *Message) error {
 
 func (ms *MessageStream) receiveMessage() (*Message, error) {
 	logger.Debug("Beginning Message receive...", "StreamID", ms.id)
-	msg, err := ms.readMsgFn(ms.receiver)
-	if err != nil {
-		return nil, err
+	var msg Message
+	var err error
+	for {
+		msg, err = ms.readMsgFn(ms.receiver)
+		if err != nil {
+			if err == otw.ErrTimedOut {
+				logger.Debug("Timeout passed during receive Message. Trying again.")
+				continue
+			}
+			return nil, err
+		}
+
+		break
 	}
 
 	return &msg, nil
