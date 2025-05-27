@@ -7,6 +7,13 @@ import (
 // Represents a Message Type.
 type MessageType string
 
+const (
+	msxProxy = MessageType("ms-x-proxy")
+
+	msxProxySrcMetaKey string = "ms-x-proxy-src"
+	msxProxyDstMetaKey string = "ms-x-proxy-dst"
+)
+
 // Represents a Message that can be sent on a Message Stream. Most likely, you want
 // NewMessage() so you can encode the metadata and payload properly.
 type Message struct {

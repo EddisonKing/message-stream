@@ -49,10 +49,9 @@ func main() {
 		}
 		log.Printf("New client from %s.\n", conn.RemoteAddr().String())
 
-		stream := ms.New(conn)
-		stream.SetKeys(ms.GenerateRSAKeyPair())
-		if err = stream.Connect(); err != nil {
-			log.Printf("failed to negatiate message stream with client: %v\n", err)
+		stream, err := ms.New(conn, nil)
+		if err != nil {
+			log.Printf("failed to negotiate message stream: %v\n", err)
 			continue
 		}
 

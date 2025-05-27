@@ -1,124 +1,119 @@
 package messagestream
 
 import (
-	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"fmt"
 	"io"
-	"math"
-	"math/big"
+	"net"
 	"time"
 
 	otw "github.com/EddisonKing/on-the-wire"
-	"github.com/google/uuid"
+)
+
+var (
+	ErrMessageStreamClosed = errors.New("Message Stream is closed")
+	ErrMissingPublicKey    = errors.New("missing public key")
+	ErrMissingPrivateKey   = errors.New("missing private key")
+	ErrProxyingNotAllowed  = errors.New("proxying is not allowed")
 )
 
 // Message Stream supporting Send and Receive operations.
 type MessageStream struct {
-	id                   uuid.UUID
 	tgtPubKey            *rsa.PublicKey
-	pubKey               *rsa.PublicKey
-	privKey              *rsa.PrivateKey
 	sender               io.Writer
 	receiver             io.Reader
 	output               chan *Message
 	errors               chan error
-	done                 chan bool
-	receivedNonceHistory map[int]time.Time
-	sentNonceHistory     map[int]time.Time
+	receivedNonceHistory *nonceManager
+	sentNonceHistory     *nonceManager
 	sendMsgFn            func(Message, io.Writer) error
 	readMsgFn            func(io.Reader) (Message, error)
-	connected            bool
+	opts                 *MessageStreamOptions
+	stopReading          chan bool
+	closed               bool
 }
 
 // Create a new Message Stream from anything that implements io.ReadWriter.
-func New(rw io.ReadWriter) *MessageStream {
-	return NewFrom(rw, rw)
+func New(rw io.ReadWriter, opts *MessageStreamOptions) (*MessageStream, error) {
+	return NewFrom(rw, rw, opts)
 }
 
 // Create a new Message Stream from an individual io.Reader and io.Writer.
-//
-// Use `SetKeys()` to specify that encryption should be used and pass in the keys
-func NewFrom(sender io.Writer, receiver io.Reader) *MessageStream {
-	otw.SetLogger(logger)
+func NewFrom(sender io.Writer, receiver io.Reader, opts *MessageStreamOptions) (*MessageStream, error) {
+	if opts == nil {
+		opts = NewMessageStreamOptions()
+		opts.Logger.Debug("Options was nil. Using defaults", "Options", opts, "StreamID", opts.ID)
+	}
 
-	id := uuid.New()
+	opts.Logger.Debug("Creating a new Message Stream...", "StreamID", opts.ID)
+	opts.Logger.Debug("Message Stream options", "Options", opts, "StreamID", opts.ID)
 
-	logger.Info("Creating a new Message Stream", "StreamID", id)
+	if opts.DeepLogging {
+		// otw.SetLogger(opts.Logger)
+	}
 
 	output := make(chan *Message, 50)
 	errs := make(chan error, 30)
 
-	msgStream := &MessageStream{
-		id:                   id,
+	ms := &MessageStream{
+		opts:                 opts,
 		sender:               sender,
 		receiver:             receiver,
 		output:               output,
 		errors:               errs,
-		receivedNonceHistory: make(map[int]time.Time),
-		sentNonceHistory:     make(map[int]time.Time),
-		done:                 make(chan bool, 1),
-		connected:            false,
-	}
-
-	return msgStream
-}
-
-// This enables encryption on the Message Stream. Pass in the private and public RSA keys. The public key will be transferred to the client on Connect.
-func (ms *MessageStream) SetKeys(privKey *rsa.PrivateKey, pubKey *rsa.PublicKey) {
-	logger.Debug("Setting Private and Public Keys", "PubKey", pubKey)
-	ms.privKey = privKey
-	ms.pubKey = pubKey
-}
-
-// Returns the RSA Public Key that was negotiate from the other end of the Message Stream if encryption was used. The key is nil if no Public Key was sent.
-func (ms *MessageStream) GetRecipientPublicKey() *rsa.PublicKey {
-	return ms.tgtPubKey
-}
-
-// Connect negotiates the Message Stream with the client. If you attempt to SendMessage before Connect is called, Connect will be called automatically.
-//
-// This negotation includes the public key exchange that enables secure Message transfer.
-// An error will be returned if it is unable to exchnage public keys.
-func (ms *MessageStream) Connect() error {
-	if ms.connected {
-		return nil
+		receivedNonceHistory: newNonceManager(defaultNonceTTL, "Received", opts.Logger),
+		sentNonceHistory:     newNonceManager(defaultNonceTTL, "Sent", opts.Logger),
+		stopReading:          make(chan bool, 1),
+		closed:               false,
 	}
 
 	// Connect message containing this end's public key
-	if ms.privKey != nil && ms.pubKey != nil {
-		logger.Debug("Exchanging public keys", "StreamID", ms.id)
+	if ms.opts.UseAsymmetricEncryption {
+		ms.opts.Logger.Debug("Asymmetric encryption requested", "StreamID", opts.ID)
+
+		if ms.opts.PublicKey == nil {
+			ms.opts.Logger.Error("Public Key was nil and needs to be set for asymmetric encryption", "StreamID", opts.ID)
+			return nil, ErrMissingPublicKey
+		}
+
+		if ms.opts.PrivateKey == nil {
+			ms.opts.Logger.Error("Private Key was nil and needs to be set for asymmetric encryption", "StreamID", opts.ID)
+			return nil, ErrMissingPrivateKey
+		}
+
+		ms.opts.Logger.Debug("Exchanging public keys...", "StreamID", ms.opts.ID)
 		keyExchangeReceive, keyExchangeSend := otw.New[rsa.PublicKey]().
 			UseJSONEncoding().
-			UseNonce(ms.newNonce, ms.checkReceivedNonce).
+			UseNonce(ms.sentNonceHistory.Generate, ms.receivedNonceHistory.NotContains).
 			UseCompression().
-			UseTimeout(time.Second * 15).
+			UseTimeout(ms.opts.KeyExchangeTimeout).
 			Build()
 
-		logger.Debug("Sending public key", "StreamID", ms.id)
-		if err := keyExchangeSend(*ms.pubKey, ms.sender); err != nil {
-			logger.Error("Failed to send public key during public key exchange", "Error", err)
-			return err
+		ms.opts.Logger.Debug("Sending public key...", "StreamID", ms.opts.ID)
+		if err := keyExchangeSend(*ms.opts.PublicKey, ms.sender); err != nil {
+			ms.opts.Logger.Error("Failed to send public key during public key exchange", "Error", err)
+			return nil, err
 		}
 
 		// Receive target's public key
-		logger.Debug("Waiting for public key from client...", "StreamID", ms.id)
+		ms.opts.Logger.Debug("Waiting for public key from client...", "StreamID", ms.opts.ID)
 		receivedPubKey, err := keyExchangeReceive(ms.receiver)
 		if err != nil {
-			logger.Error("Failed to recieve public key during public key exchange", "Error", err)
-			return err
+			ms.opts.Logger.Error("Failed to recieve public key during public key exchange", "Error", err)
+			return nil, err
 		}
 
-		logger.Debug("Received public key from client", "StreamID", ms.id)
+		ms.opts.Logger.Debug("Received public key from client", "StreamID", ms.opts.ID)
 		ms.tgtPubKey = &receivedPubKey
 
 		rmf, smf := otw.New[Message]().
 			UseJSONEncoding().
-			UseNonce(ms.newNonce, ms.checkReceivedNonce).
+			UseNonce(ms.sentNonceHistory.Generate, ms.receivedNonceHistory.NotContains).
 			UseAsymmetricEncryption(func() *rsa.PublicKey {
 				return ms.tgtPubKey
 			}, func() *rsa.PrivateKey {
-				return ms.privKey
+				return ms.opts.PrivateKey
 			}).
 			UseCompression().
 			UseTimeout(time.Second * 15).
@@ -127,12 +122,11 @@ func (ms *MessageStream) Connect() error {
 		ms.readMsgFn = rmf
 		ms.sendMsgFn = smf
 	} else {
-		logger.Warn("No keys set, Message will be sent unencrypted")
 		rmf, smf := otw.New[Message]().
 			UseJSONEncoding().
-			UseNonce(ms.newNonce, ms.checkReceivedNonce).
+			UseNonce(ms.sentNonceHistory.Generate, ms.receivedNonceHistory.NotContains).
 			UseCompression().
-			UseTimeout(time.Second * 15).
+			UseTimeout(ms.opts.MessageExchangeTimeout).
 			Build()
 
 		ms.readMsgFn = rmf
@@ -140,7 +134,7 @@ func (ms *MessageStream) Connect() error {
 	}
 
 	go func() {
-		logger.Debug("Waiting for Messages from client...", "StreamID", ms.id)
+		ms.opts.Logger.Debug("Waiting for Messages from client...", "StreamID", ms.opts.ID)
 		for {
 			result := make(chan *Message, 1)
 			defer close(result)
@@ -151,12 +145,13 @@ func (ms *MessageStream) Connect() error {
 					ms.errors <- err
 					return
 				}
-				logger.Info("Received Message", "Type", msg.Type, "StreamID", ms.id)
+
+				ms.opts.Logger.Debug("Received Message", "Type", msg.Type, "StreamID", ms.opts.ID)
 				result <- msg
 			}()
 
 			select {
-			case <-ms.done:
+			case <-ms.stopReading:
 				return
 			case msg := <-result:
 				ms.output <- msg
@@ -164,93 +159,81 @@ func (ms *MessageStream) Connect() error {
 		}
 	}()
 
-	logger.Info("Message Stream successfully negotiated", "StreamID", ms.id)
-	ms.connected = true
-	return nil
+	ms.opts.Logger.Debug("Message Stream successfully negotiated", "StreamID", ms.opts.ID)
+	ms.closed = false
+	return ms, nil
 }
 
-func (ms *MessageStream) generateNonce() int {
-	nonce, err := rand.Int(rand.Reader, big.NewInt(int64(math.MaxInt32)))
-	if err != nil {
-		logger.Error("Failed to generate nonce", "Error", err, "StreamID", ms.id)
-		panic(err)
-	}
-
-	logger.Debug("Generated new nonce", "Nonce", nonce.Int64(), "StreamID", ms.id)
-	return int(nonce.Int64())
-}
-
-func (ms *MessageStream) newNonce() int {
-	var n int
-	for {
-		nonce := ms.generateNonce()
-
-		if err := ms.storeNonce(&ms.sentNonceHistory, nonce); err != nil {
-			continue
-		}
-
-		n = nonce
-		break
-	}
-	return n
-}
-
-const nonceTTL time.Duration = time.Minute * 15 // Not sure about the time, this should be relative to the time it might take to randomly generate the same nonce again
-
-func (ms *MessageStream) storeNonce(nonceHistory *map[int]time.Time, nonce int) error {
-	if seenTime, exists := (*nonceHistory)[nonce]; exists {
-		if time.Since(seenTime) < nonceTTL {
-			logger.Warn("Nonce already stored", "Nonce", nonce, "StreamID", ms.id)
-			return fmt.Errorf("nonce %d has already been received, this could be a replay", nonce)
-		}
-	}
-	// Refresh or set nonce TTL
-	logger.Debug("Storing new sent nonce", "Nonce", nonce, "StreamID", ms.id)
-	(*nonceHistory)[nonce] = time.Now().UTC()
-	return nil
-}
-
-func (ms *MessageStream) checkReceivedNonce(n int) bool {
-	return ms.storeNonce(&ms.receivedNonceHistory, n) == nil
+// Returns the RSA Public Key that was negotiate from the other end of the Message Stream if encryption was used. The key is nil if no Public Key was sent.
+func (ms *MessageStream) GetRecipientPublicKey() *rsa.PublicKey {
+	return ms.tgtPubKey
 }
 
 // Terminates any internal channels preventing sending and receiving on this Message Stream.
 func (ms *MessageStream) Close() {
-	logger.Info("Closing Message Stream", "StreamID", ms.id)
-	ms.done <- true
+	if ms.closed {
+		return
+	}
+
+	ms.opts.Logger.Debug("Closing Message Stream", "StreamID", ms.opts.ID)
+	ms.closed = true
+	ms.stopReading <- true
 	close(ms.output)
-	ms.connected = false
+	close(ms.stopReading)
 }
 
 // Sends a Message on the io.Writer portion of the Message Stream.
 //
 // Returns an error if it fails serialise the metadata or payload, write data to the underlying `io.Writer` or generate a nonce.
-func (ms *MessageStream) SendMessage(t MessageType, metadata map[string]any, payload any) error {
-	if !ms.connected {
-		logger.Debug("SendMessage called before Message Stream was connected; automatically calling Connect")
-		if err := ms.Connect(); err != nil {
-			logger.Error("Failed to negotiate Mesage Stream during Connect", "Error", err)
+//
+// If proxying is enabled, the Message will be proxied through the designated addresses if they support Message Streams
+func (ms *MessageStream) SendMessage(t MessageType, metadata map[string]any, payload any, proxies ...string) error {
+	useProxy := len(proxies) > 0
+
+	if useProxy && !ms.opts.AllowProxying {
+		ms.opts.Logger.Error("Message proxying is disabled for security reasons by default. If you want to be able to proxy Messages, pass in options that have AllowProxying set to true", "CurrentOptions", ms.opts)
+		return ErrProxyingNotAllowed
+	}
+
+	for _, proxy := range proxies {
+		if _, err := net.ResolveTCPAddr("tcp", proxy); err != nil {
+			ms.opts.Logger.Error("Proxy address is not a resolvable TCP address", "ProxyAddr", proxy, "Error", err)
 			return err
 		}
 	}
 
-	logger.Info("Preparing to send Message", "StreamID", ms.id)
-	m, err := newMessage(t, metadata, payload)
-	if err != nil {
-		return err
+	if !useProxy {
+		ms.opts.Logger.Debug("Sending Message", "Type", t, "Metadata", metadata, "StreamID", ms.opts.ID)
+		m, err := newMessage(t, metadata, payload)
+		if err != nil {
+			return err
+		}
+
+		return ms.sendMessage(m)
+	} else {
+		msg, err := newMessage(t, metadata, payload)
+		if err != nil {
+			return err
+		}
+
+		proxiedMsg, err := newMessage(msxProxy, map[string]any{
+			msxProxyDstMetaKey: proxies,
+		}, msg)
+		if err != nil {
+			return err
+		}
+
+		ms.opts.Logger.Debug("Sending Proxied Message", "Type", t, "Metadata", metadata, "Path", proxies, "StreamID", ms.opts.ID)
+
+		return ms.sendMessage(proxiedMsg)
 	}
-
-	logger.Debug("Message created", "Type", t, "StreamID", ms.id)
-
-	return ms.sendMessage(m)
 }
 
 // Forward an existing Message. This is useful in a situation where multiple Message Streams are being used and a received Message needs to be passed to a different Message Stream.
 //
 // Returns an error if it fails to write data to the underlying `io.Writer` or generate a nonce.
 func (ms *MessageStream) ForwardMessage(msg *Message) error {
-	logger.Info("Forwarding Message", "Type", msg.Type, "StreamID", ms.id)
-
+	ms.opts.Logger.Debug("Forwarding Message", "Type", msg.Type, "Metadata", msg.Metadata, "StreamID", ms.opts.ID)
 	return ms.sendMessage(msg)
 }
 
@@ -265,7 +248,11 @@ func (ms *MessageStream) Errors() <-chan error {
 }
 
 func (ms *MessageStream) sendMessage(m *Message) error {
-	logger.Debug("Sending message", "Type", m.Type, "StreamID", ms.id)
+	if ms.closed {
+		ms.opts.Logger.Error("Message Stream is closed. Unable to forward.", "StreamID", ms.opts.ID)
+		return ErrMessageStreamClosed
+	}
+
 	if err := ms.sendMsgFn(*m, ms.sender); err != nil {
 		return err
 	}
@@ -274,21 +261,86 @@ func (ms *MessageStream) sendMessage(m *Message) error {
 }
 
 func (ms *MessageStream) receiveMessage() (*Message, error) {
-	logger.Debug("Beginning Message receive...", "StreamID", ms.id)
-	var msg Message
-	var err error
 	for {
-		msg, err = ms.readMsgFn(ms.receiver)
-		if err != nil {
-			if err == otw.ErrTimedOut {
-				logger.Debug("Timeout passed during receive Message. Trying again.")
-				continue
+		ms.opts.Logger.Debug("Beginning Message receive...", "StreamID", ms.opts.ID)
+		var msg Message
+		var err error
+		for {
+			msg, err = ms.readMsgFn(ms.receiver)
+			if err == nil {
+				break
 			}
-			return nil, err
 		}
 
-		break
+		if msg.Type == msxProxy {
+			go ms.handleProxiedMessage(msg)
+			continue
+		}
+
+		ms.opts.Logger.Debug("Received Message", "Type", msg.Type, "Metadata", msg.Metadata, "StreamID", ms.opts.ID)
+		return &msg, nil
+	}
+}
+
+func (ms *MessageStream) handleProxiedMessage(msg Message) {
+	ms.opts.Logger.Debug("Received Proxy Message", "Type", msg.Type, "StreamID", ms.opts.ID)
+
+	payload, meta, err := Unwrap[Message](&msg)
+	if err != nil {
+		ms.opts.Logger.Error("Failed to unwrap proxy Message", "Error", err)
+		ms.errors <- err
+		return
 	}
 
-	return &msg, nil
+	dstListProp, exists := meta[msxProxyDstMetaKey]
+	if !exists {
+		// This node should be the intended recipient
+		ms.output <- &msg
+		return
+	}
+
+	dstListArr, ok := dstListProp.([]any)
+	if !ok {
+		ms.opts.Logger.Error("Proxy Message contains a malformed proxy list. Expected []string. No choice but to drop", "Proxies", dstListProp)
+		return
+	}
+
+	dstList := make([]string, len(dstListArr))
+	for i, dstProp := range dstListArr {
+		dst, ok := dstProp.(string)
+		if !ok {
+			ms.opts.Logger.Error("Proxy Message proxy list contains a malformed entry. Expected string. No choice but to drop", "Proxies", dstProp)
+			return
+		}
+
+		dstList[i] = dst
+	}
+
+	if len(dstList) < 1 {
+		// This node should be the intended recipient although, an empty slice seems like an unlikely scenario
+		ms.output <- &msg
+		return
+	}
+
+	nxtHop := dstList[0]
+	nxt, err := Dial(nxtHop, ms.opts)
+	if err != nil {
+		errMsg := fmt.Errorf("failed to negotiate connection to proxy Message Stream: %s", err)
+		ms.opts.Logger.Error("Failed to proxy Messge when dialing next proxy", "Error", errMsg)
+		return
+	}
+	defer nxt.Close()
+
+	if err := nxt.SendMessage(msxProxy, map[string]any{
+		msxProxyDstMetaKey: dstList[1:],
+	}, payload, dstList[1:]...); err != nil {
+		ms.opts.Logger.Error("Failed to proxy Message during sending to next proxy", "Error", err)
+		return
+	}
+
+	proxyReply := <-nxt.Receiver()
+	if err := ms.ForwardMessage(proxyReply); err != nil {
+		ms.opts.Logger.Error("Failed to send proxy reply Message back to originator", "Error", err)
+		return
+	}
 }
