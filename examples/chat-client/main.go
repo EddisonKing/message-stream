@@ -21,10 +21,9 @@ func main() {
 		log.Fatalf("Failed to connect to Server: %s\n", err)
 	}
 
-	stream := ms.New(conn)
-	stream.SetKeys(ms.GenerateRSAKeyPair())
-	if err = stream.Connect(); err != nil {
-		log.Fatalf("Failed to negotiate message stream with server: %s\n", err)
+	stream, err := ms.New(conn, nil)
+	if err != nil {
+		log.Fatalf("Failed to negotiate Message Stream: %s\n", err)
 	}
 
 	buffer := bufio.NewReader(os.Stdin)

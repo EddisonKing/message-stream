@@ -1,11 +1,7 @@
 package tests
 
 import (
-	"crypto/rsa"
 	"log"
-	"log/slog"
-	"net"
-	"os"
 	"testing"
 	"time"
 
@@ -14,73 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var server net.Listener
-
-func init() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelError,
-	}))
-	ms.SetLogger(logger)
-}
-
-var (
-	serverPubKey  *rsa.PublicKey
-	serverPrivKey *rsa.PrivateKey
-)
-
-// Echo Server for test setup
-func getConn(useEncryption bool) (net.Conn, error) {
-	if useEncryption {
-		if serverPrivKey == nil || serverPubKey == nil {
-			serverPrivKey, serverPubKey = ms.GenerateRSAKeyPair()
-		}
-	}
-
-	if server == nil {
-		listener, err := net.Listen("tcp", "127.0.0.2:9190")
-		if err != nil {
-			return nil, err
-		}
-
-		server = listener
-		go func() {
-			for {
-				client, err := server.Accept()
-				if err != nil {
-					panic(err)
-				}
-
-				clientMsgStream := ms.New(client)
-				clientMsgStream.SetKeys(serverPrivKey, serverPubKey)
-
-				if err := clientMsgStream.Connect(); err != nil {
-					panic(err)
-				}
-
-				go func() {
-					for msg := range clientMsgStream.Receiver() {
-						// Simple echo server, forward message back
-						if err := clientMsgStream.ForwardMessage(msg); err != nil {
-							panic(err)
-						}
-					}
-				}()
-			}
-		}()
-	}
-
-	conn, err := net.Dial("tcp", "127.0.0.2:9190")
-	if err != nil {
-		return nil, err
-	}
-
-	return conn, err
-}
-
-const TestMessage = ms.MessageType("test")
-
 func TestFullMessageTransfer(t *testing.T) {
-	conn, err := getConn(false)
+	conn, err := getConn()
 	assert.Nil(t, err)
 	if err != nil {
 		return
@@ -91,7 +22,11 @@ func TestFullMessageTransfer(t *testing.T) {
 	}
 	payload := "Hello World!"
 
-	msgStream := ms.New(conn)
+	msgStream, err := ms.New(conn, getOptions())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
 
 	err = msgStream.SendMessage(TestMessage, header, payload)
 	assert.Nil(t, err)
@@ -133,7 +68,7 @@ func TestFullMessageTransfer(t *testing.T) {
 }
 
 func TestMetadataOnlyMessageTransfer(t *testing.T) {
-	conn, err := getConn(false)
+	conn, err := getConn()
 	assert.Nil(t, err)
 	if err != nil {
 		return
@@ -143,7 +78,11 @@ func TestMetadataOnlyMessageTransfer(t *testing.T) {
 		"creation_time": time.Now().UTC(),
 	}
 
-	msgStream := ms.New(conn)
+	msgStream, err := ms.New(conn, getOptions())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
 
 	err = msgStream.SendMessage(TestMessage, header, nil)
 	assert.Nil(t, err)
@@ -180,7 +119,7 @@ func TestMetadataOnlyMessageTransfer(t *testing.T) {
 }
 
 func TestPayloadOnlyMessageTransfer(t *testing.T) {
-	conn, err := getConn(false)
+	conn, err := getConn()
 	assert.Nil(t, err)
 	if err != nil {
 		return
@@ -188,7 +127,11 @@ func TestPayloadOnlyMessageTransfer(t *testing.T) {
 
 	payload := "Hello World!"
 
-	msgStream := ms.New(conn)
+	msgStream, err := ms.New(conn, getOptions())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
 
 	err = msgStream.SendMessage(TestMessage, nil, payload)
 	assert.Nil(t, err)
@@ -223,7 +166,7 @@ func TestPayloadOnlyMessageTransfer(t *testing.T) {
 }
 
 func TestEncryptedFullMessageTransfer(t *testing.T) {
-	conn, err := getConn(true)
+	conn, err := getEncryptedConn()
 	assert.Nil(t, err)
 	if err != nil {
 		return
@@ -234,9 +177,11 @@ func TestEncryptedFullMessageTransfer(t *testing.T) {
 	}
 	payload := "Hello World!"
 
-	msgStream := ms.New(conn)
-
-	msgStream.SetKeys(ms.GenerateRSAKeyPair())
+	msgStream, err := ms.New(conn, getOptionsForEncryption())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
 
 	err = msgStream.SendMessage(TestMessage, header, payload)
 	assert.Nil(t, err)
@@ -278,7 +223,7 @@ func TestEncryptedFullMessageTransfer(t *testing.T) {
 }
 
 func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
-	conn, err := getConn(true)
+	conn, err := getEncryptedConn()
 	assert.Nil(t, err)
 	if err != nil {
 		return
@@ -288,9 +233,11 @@ func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
 		"creation_time": time.Now().UTC(),
 	}
 
-	msgStream := ms.New(conn)
-
-	msgStream.SetKeys(ms.GenerateRSAKeyPair())
+	msgStream, err := ms.New(conn, getOptionsForEncryption())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
 
 	err = msgStream.SendMessage(TestMessage, header, nil)
 	assert.Nil(t, err)
@@ -327,7 +274,7 @@ func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
 }
 
 func TestEncryptedPayloadOnlyMessageTransfer(t *testing.T) {
-	conn, err := getConn(true)
+	conn, err := getEncryptedConn()
 	assert.Nil(t, err)
 	if err != nil {
 		return
@@ -335,9 +282,11 @@ func TestEncryptedPayloadOnlyMessageTransfer(t *testing.T) {
 
 	payload := "Hello World!"
 
-	msgStream := ms.New(conn)
-
-	msgStream.SetKeys(ms.GenerateRSAKeyPair())
+	msgStream, err := ms.New(conn, getOptionsForEncryption())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
 
 	err = msgStream.SendMessage(TestMessage, nil, payload)
 	assert.Nil(t, err)
