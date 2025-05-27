@@ -1,12 +1,12 @@
 # MessageStream
 
 ## Purpose
-A simple structured communication layer supporting security through RSA encryption and signing. The protocol also comes with a read made server and client and supports proxying Messages through multiple servers across networks.
+A simple structured communication layer supporting security through RSA encryption and signing. The protocol also comes with a ready made server and client and supports proxying Messages through multiple servers across networks.
 
 Both sides create a Message Stream which builds a secured connection under the hood by exchanging RSA public keys. All messages carry a nonce to protect against replay attacks.
 Messages are encrypted with the recipient's public key so only they can read it. Sent Messages are also signed by the sender and verified by the receiver.
 Messages are Typed and can easily be used in `switch` statements on the receiving end of the Message Stream. 
-Messages also contain additional optional metadata for more flexibility. E.g. I want to add a creation timestamp to my message, but I don't want to add that as a property to the struct being sent as the Message payload.
+Messages also contain additional optional metadata for more flexibility. e.g. I want to add a creation timestamp to my message, but I don't want to add that as a property to the struct being sent as the Message payload.
 
 ## Usage
 
@@ -35,7 +35,6 @@ Message Types are strings that make it easier to differentiate Messages as they 
 ### Creating and running a Message Stream Server
 ```go
 listener, err := ms.Listen("0.0.0.0:1337", nil)
-
 defer listener.Close()
 
 client, err := listener.Accept()
@@ -48,7 +47,6 @@ Passing `nil` to the `opts` when calling `Listen` or `Dial` (or even constructin
 ### Connecting to a Message Stream Server as a Client
 ```go
 client, err := ms.Dial("127.0.0.1:1337", nil)
-
 defer client.Close()
 ```
 
@@ -69,7 +67,7 @@ Message Streams support the `Close` operation which does multiple things, includ
 
 The `io.ReaderWriter`, `io.Reader` and `io.Writer` parts given to a Message Stream should not be used by the caller after the MessageStream struct has been created. Writes and reads from the underlying parts could result in undefined behaviour.
 
-**Note:** For added security when intending to use a `net.Conn` to create a Message Stream, it is best to use `crypto/tls` (from https://pkg.go.dev/crypto/tls), and wrap the connection in TLS, ideally with a valid Certificate, although self-signed in a controlled environment is good too. The TLS layer will prevent Man-in-the-middle attacks, as well as hiding the byte boundaries between already encrypted Message Stream Messages. Message Stream already uses nonces to prevent replay attacks, but encrypting the entirety of the traffic, not just payloads and metadata, is much more secure.
+**Note:** For added security when intending to use a `net.Conn` to create a Message Stream, it is best to use `crypto/tls` (from https://pkg.go.dev/crypto/tls), and wrap the connection in TLS, ideally with a valid Certificate, although self-signed in a controlled environment is good too.
 
 ### Receiving Messages
 ```go
@@ -111,11 +109,10 @@ opts.Logger = logger
 // Then pass opts to Message Stream
 ```
 
-The Message Stream library surfaces a `MessageStreamOptions` struct allowing for a `slog.Logger` to be passed in for logging. No payloads are ever logged for security reasons. Setting `DeepLogging` to `true` will forward the logger onto the underlying `on-the-wire` library which will produce a significant amount of debugging logging raw bytes being transferred and transformed before and after reading/writing. No payloads are logged for security reasons. 
+The Message Stream library surfaces a `MessageStreamOptions` struct allowing for a `slog.Logger` to be passed in for logging. No payloads are ever logged for security reasons. Setting `DeepLogging` to `true` will forward the logger on to the underlying `on-the-wire` library which will produce a significant amount of debugging logging raw bytes being transferred and transformed before and after reading/writing. No payloads are logged for security reasons. 
 
 ### Handling Errors
 ```go
-// 
 for err := range stream.Errors() {
   log.Printf("Error from Message Stream: %s", err)
 }
