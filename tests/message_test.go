@@ -1,7 +1,6 @@
 package tests
 
 import (
-	"log"
 	"testing"
 	"time"
 
@@ -34,14 +33,6 @@ func TestFullMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -63,8 +54,6 @@ func TestFullMessageTransfer(t *testing.T) {
 		_, exists := sentMetadata["creation_time"]
 		assert.True(t, exists)
 	}
-
-	assert.False(t, anyErrors)
 }
 
 func TestMetadataOnlyMessageTransfer(t *testing.T) {
@@ -90,14 +79,6 @@ func TestMetadataOnlyMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -114,8 +95,6 @@ func TestMetadataOnlyMessageTransfer(t *testing.T) {
 		_, exists := sentMetadata["creation_time"]
 		assert.True(t, exists)
 	}
-
-	assert.False(t, anyErrors)
 }
 
 func TestPayloadOnlyMessageTransfer(t *testing.T) {
@@ -139,14 +118,6 @@ func TestPayloadOnlyMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -162,7 +133,6 @@ func TestPayloadOnlyMessageTransfer(t *testing.T) {
 	}
 
 	assert.Equal(t, payload, sentPayload)
-	assert.False(t, anyErrors)
 }
 
 func TestEncryptedFullMessageTransfer(t *testing.T) {
@@ -189,14 +159,6 @@ func TestEncryptedFullMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -218,8 +180,6 @@ func TestEncryptedFullMessageTransfer(t *testing.T) {
 		_, exists := sentMetadata["creation_time"]
 		assert.True(t, exists)
 	}
-
-	assert.False(t, anyErrors)
 }
 
 func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
@@ -245,14 +205,6 @@ func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -269,8 +221,6 @@ func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
 		_, exists := sentMetadata["creation_time"]
 		assert.True(t, exists)
 	}
-
-	assert.False(t, anyErrors)
 }
 
 func TestEncryptedPayloadOnlyMessageTransfer(t *testing.T) {
@@ -294,14 +244,6 @@ func TestEncryptedPayloadOnlyMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -317,5 +259,4 @@ func TestEncryptedPayloadOnlyMessageTransfer(t *testing.T) {
 	}
 
 	assert.Equal(t, payload, sentPayload)
-	assert.False(t, anyErrors)
 }

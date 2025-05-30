@@ -9,9 +9,6 @@ type MessageType string
 
 const (
 	msxProxy = MessageType("ms-x-proxy")
-
-	msxProxySrcMetaKey string = "ms-x-proxy-src"
-	msxProxyDstMetaKey string = "ms-x-proxy-dst"
 )
 
 // Represents a Message that can be sent on a Message Stream. Most likely, you want
@@ -20,11 +17,12 @@ type Message struct {
 	Type     MessageType
 	Metadata map[string]any
 	Payload  []byte
+	Proxies  []string
 }
 
 // Create a new Message to be sent via a Message Stream.
 // The message will be encrypted by the Message Stream when sent using the recipient's public key.
-func newMessage(t MessageType, metadata map[string]any, payload any) (*Message, error) {
+func newMessage(t MessageType, metadata map[string]any, payload any, proxies ...string) (*Message, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -34,6 +32,7 @@ func newMessage(t MessageType, metadata map[string]any, payload any) (*Message, 
 		Type:     t,
 		Metadata: metadata,
 		Payload:  payloadBytes,
+		Proxies:  proxies,
 	}, nil
 }
 
