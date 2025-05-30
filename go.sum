@@ -1,5 +1,3 @@
-github.com/EddisonKing/on-the-wire v0.1.0 h1:fnOZspwuaamW65fnlhKe0v3ID68nJD+2NXAKat+Xv+I=
-github.com/EddisonKing/on-the-wire v0.1.0/go.mod h1:WcJHOQUfALMTzHM3fcV5Qryt0XC4Y96ySRuEa7GNkms=
 github.com/EddisonKing/on-the-wire v0.2.0 h1:PpZgkIyzmRO2RIk1fDBjrtDmy5UuOZwPfyBmAfLwt3E=
 github.com/EddisonKing/on-the-wire v0.2.0/go.mod h1:WcJHOQUfALMTzHM3fcV5Qryt0XC4Y96ySRuEa7GNkms=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
