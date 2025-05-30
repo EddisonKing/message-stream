@@ -63,10 +63,5 @@ func main() {
 			}
 		}()
 
-		go func() {
-			for err := range stream.Errors() {
-				log.Printf("MsgStream Error: %s\n", err)
-			}
-		}()
 	}
 }
