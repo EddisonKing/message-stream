@@ -2,20 +2,11 @@ package messagestream
 
 import (
 	"crypto/rsa"
-	"errors"
-	"fmt"
 	"io"
 	"net"
 	"time"
 
 	otw "github.com/EddisonKing/on-the-wire"
-)
-
-var (
-	ErrMessageStreamClosed = errors.New("Message Stream is closed")
-	ErrMissingPublicKey    = errors.New("missing public key")
-	ErrMissingPrivateKey   = errors.New("missing private key")
-	ErrProxyingNotAllowed  = errors.New("proxying is not allowed")
 )
 
 // Message Stream supporting Send and Receive operations.
@@ -32,25 +23,54 @@ type MessageStream struct {
 	opts                 *MessageStreamOptions
 	stopReading          chan bool
 	closed               bool
+	conn                 net.Conn
+}
+
+func (ms *MessageStream) logDebug(msg string, args ...any) {
+	if ms.opts.Logger != nil {
+		msgArgs := append(args, "StreamID", ms.opts.ID)
+		ms.opts.Logger.Debug(msg, msgArgs...)
+	}
+}
+
+func (ms *MessageStream) logError(err error, args ...any) error {
+	msgArgs := make([]any, 0)
+	msgArgs = append(msgArgs, "StreamID", ms.opts.ID)
+	if len(args)%2 != 0 {
+		msgArgs = append(msgArgs, "Message")
+	}
+	msgArgs = append(msgArgs, args...)
+
+	if ms.opts.Logger != nil {
+		ms.opts.Logger.Error(err.Error(), msgArgs...)
+	}
+
+	return err
 }
 
 // Create a new Message Stream from anything that implements io.ReadWriter.
 func New(rw io.ReadWriter, opts *MessageStreamOptions) (*MessageStream, error) {
-	return NewFrom(rw, rw, opts)
+	ms, err := NewFrom(rw, rw, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	if conn, ok := rw.(net.Conn); ok {
+		ms.logDebug("Message Stream created over net connection. Storing connection reference")
+		ms.conn = conn
+	}
+
+	return ms, nil
 }
 
 // Create a new Message Stream from an individual io.Reader and io.Writer.
 func NewFrom(sender io.Writer, receiver io.Reader, opts *MessageStreamOptions) (*MessageStream, error) {
 	if opts == nil {
 		opts = NewMessageStreamOptions()
-		opts.Logger.Debug("Options was nil. Using defaults", "Options", opts, "StreamID", opts.ID)
 	}
 
-	opts.Logger.Debug("Creating a new Message Stream...", "StreamID", opts.ID)
-	opts.Logger.Debug("Message Stream options", "Options", opts, "StreamID", opts.ID)
-
 	if opts.DeepLogging {
-		// otw.SetLogger(opts.Logger)
+		otw.SetLogger(opts.Logger)
 	}
 
 	output := make(chan *Message, 50)
@@ -68,21 +88,22 @@ func NewFrom(sender io.Writer, receiver io.Reader, opts *MessageStreamOptions) (
 		closed:               false,
 	}
 
+	ms.logDebug("Creating a new Message Stream...")
+	ms.logDebug("Message Stream options", "Options", opts)
+
 	// Connect message containing this end's public key
 	if ms.opts.UseAsymmetricEncryption {
-		ms.opts.Logger.Debug("Asymmetric encryption requested", "StreamID", opts.ID)
+		ms.logDebug("Asymmetric encryption requested")
 
 		if ms.opts.PublicKey == nil {
-			ms.opts.Logger.Error("Public Key was nil and needs to be set for asymmetric encryption", "StreamID", opts.ID)
-			return nil, ErrMissingPublicKey
+			return nil, ms.logError(ErrMissingPublicKey)
 		}
 
 		if ms.opts.PrivateKey == nil {
-			ms.opts.Logger.Error("Private Key was nil and needs to be set for asymmetric encryption", "StreamID", opts.ID)
-			return nil, ErrMissingPrivateKey
+			return nil, ms.logError(ErrMissingPrivateKey)
 		}
 
-		ms.opts.Logger.Debug("Exchanging public keys...", "StreamID", ms.opts.ID)
+		ms.logDebug("Exchanging public keys...")
 		keyExchangeReceive, keyExchangeSend := otw.New[rsa.PublicKey]().
 			UseJSONEncoding().
 			UseNonce(ms.sentNonceHistory.Generate, ms.receivedNonceHistory.NotContains).
@@ -90,51 +111,45 @@ func NewFrom(sender io.Writer, receiver io.Reader, opts *MessageStreamOptions) (
 			UseTimeout(ms.opts.KeyExchangeTimeout).
 			Build()
 
-		ms.opts.Logger.Debug("Sending public key...", "StreamID", ms.opts.ID)
+		ms.logDebug("Sending public key...")
 		if err := keyExchangeSend(*ms.opts.PublicKey, ms.sender); err != nil {
-			ms.opts.Logger.Error("Failed to send public key during public key exchange", "Error", err)
-			return nil, err
+			return nil, ms.logError(ErrFailedToSendPublicKey, err.Error())
 		}
 
 		// Receive target's public key
-		ms.opts.Logger.Debug("Waiting for public key from client...", "StreamID", ms.opts.ID)
+		ms.logDebug("Waiting for public key from client...")
 		receivedPubKey, err := keyExchangeReceive(ms.receiver)
 		if err != nil {
-			ms.opts.Logger.Error("Failed to recieve public key during public key exchange", "Error", err)
-			return nil, err
+			return nil, ms.logError(ErrFailedToReceivePublicKey, err.Error())
 		}
 
-		ms.opts.Logger.Debug("Received public key from client", "StreamID", ms.opts.ID)
+		ms.logDebug("Received public key from client")
 		ms.tgtPubKey = &receivedPubKey
 
-		rmf, smf := otw.New[Message]().
-			UseJSONEncoding().
-			UseNonce(ms.sentNonceHistory.Generate, ms.receivedNonceHistory.NotContains).
-			UseAsymmetricEncryption(func() *rsa.PublicKey {
-				return ms.tgtPubKey
-			}, func() *rsa.PrivateKey {
-				return ms.opts.PrivateKey
-			}).
-			UseCompression().
-			UseTimeout(time.Second * 15).
-			Build()
-
-		ms.readMsgFn = rmf
-		ms.sendMsgFn = smf
-	} else {
-		rmf, smf := otw.New[Message]().
-			UseJSONEncoding().
-			UseNonce(ms.sentNonceHistory.Generate, ms.receivedNonceHistory.NotContains).
-			UseCompression().
-			UseTimeout(ms.opts.MessageExchangeTimeout).
-			Build()
-
-		ms.readMsgFn = rmf
-		ms.sendMsgFn = smf
 	}
 
+	messagePipeline := otw.New[Message]().
+		UseJSONEncoding().
+		UseNonce(ms.sentNonceHistory.Generate, ms.receivedNonceHistory.NotContains)
+
+	if opts.UseAsymmetricEncryption {
+		messagePipeline.UseAsymmetricEncryption(func() *rsa.PublicKey {
+			return ms.tgtPubKey
+		}, func() *rsa.PrivateKey {
+			return ms.opts.PrivateKey
+		})
+	}
+
+	rmf, smf := messagePipeline.
+		UseCompression().
+		UseTimeout(time.Second * 15).
+		Build()
+
+	ms.readMsgFn = rmf
+	ms.sendMsgFn = smf
+
 	go func() {
-		ms.opts.Logger.Debug("Waiting for Messages from client...", "StreamID", ms.opts.ID)
+		ms.logDebug("Waiting for Messages from client...")
 		for {
 			result := make(chan *Message, 1)
 			defer close(result)
@@ -146,7 +161,7 @@ func NewFrom(sender io.Writer, receiver io.Reader, opts *MessageStreamOptions) (
 					return
 				}
 
-				ms.opts.Logger.Debug("Received Message", "Type", msg.Type, "StreamID", ms.opts.ID)
+				ms.logDebug("Received Message", "Type", msg.Type)
 				result <- msg
 			}()
 
@@ -159,7 +174,7 @@ func NewFrom(sender io.Writer, receiver io.Reader, opts *MessageStreamOptions) (
 		}
 	}()
 
-	ms.opts.Logger.Debug("Message Stream successfully negotiated", "StreamID", ms.opts.ID)
+	ms.logDebug("Message Stream successfully negotiated")
 	ms.closed = false
 	return ms, nil
 }
@@ -169,13 +184,18 @@ func (ms *MessageStream) GetRecipientPublicKey() *rsa.PublicKey {
 	return ms.tgtPubKey
 }
 
+// Returns the underlying `net.Conn` if the Message Stream was created from one. nil otherwise.
+func (ms *MessageStream) GetConnection() net.Conn {
+	return ms.conn
+}
+
 // Terminates any internal channels preventing sending and receiving on this Message Stream.
 func (ms *MessageStream) Close() {
 	if ms.closed {
 		return
 	}
 
-	ms.opts.Logger.Debug("Closing Message Stream", "StreamID", ms.opts.ID)
+	ms.logDebug("Closing Message Stream")
 	ms.closed = true
 	ms.stopReading <- true
 	close(ms.output)
@@ -191,19 +211,17 @@ func (ms *MessageStream) SendMessage(t MessageType, metadata map[string]any, pay
 	useProxy := len(proxies) > 0
 
 	if useProxy && !ms.opts.AllowProxying {
-		ms.opts.Logger.Error("Message proxying is disabled for security reasons by default. If you want to be able to proxy Messages, pass in options that have AllowProxying set to true", "CurrentOptions", ms.opts)
-		return ErrProxyingNotAllowed
+		return ms.logError(ErrProxyingNotAllowed, "Message proxying is disabled for security reasons by default. If you want to be able to proxy Messages, pass in options that have AllowProxying set to true", "CurrentOptions", ms.opts)
 	}
 
 	for _, proxy := range proxies {
 		if _, err := net.ResolveTCPAddr("tcp", proxy); err != nil {
-			ms.opts.Logger.Error("Proxy address is not a resolvable TCP address", "ProxyAddr", proxy, "Error", err)
-			return err
+			return ms.logError(ErrProxyAddressUnresolvable, "Proxy address is not a resolvable TCP address", "ProxyAddr", proxy, "Error", err)
 		}
 	}
 
 	if !useProxy {
-		ms.opts.Logger.Debug("Sending Message", "Type", t, "Metadata", metadata, "StreamID", ms.opts.ID)
+		ms.logDebug("Sending Message", "Type", t, "Metadata", metadata)
 		m, err := newMessage(t, metadata, payload)
 		if err != nil {
 			return err
@@ -223,7 +241,7 @@ func (ms *MessageStream) SendMessage(t MessageType, metadata map[string]any, pay
 			return err
 		}
 
-		ms.opts.Logger.Debug("Sending Proxied Message", "Type", t, "Metadata", metadata, "Path", proxies, "StreamID", ms.opts.ID)
+		ms.logDebug("Sending Proxied Message", "Type", t, "Metadata", metadata, "Path", proxies)
 
 		return ms.sendMessage(proxiedMsg)
 	}
@@ -233,7 +251,7 @@ func (ms *MessageStream) SendMessage(t MessageType, metadata map[string]any, pay
 //
 // Returns an error if it fails to write data to the underlying `io.Writer` or generate a nonce.
 func (ms *MessageStream) ForwardMessage(msg *Message) error {
-	ms.opts.Logger.Debug("Forwarding Message", "Type", msg.Type, "Metadata", msg.Metadata, "StreamID", ms.opts.ID)
+	ms.logDebug("Forwarding Message", "Type", msg.Type, "Metadata", msg.Metadata)
 	return ms.sendMessage(msg)
 }
 
@@ -249,7 +267,6 @@ func (ms *MessageStream) Errors() <-chan error {
 
 func (ms *MessageStream) sendMessage(m *Message) error {
 	if ms.closed {
-		ms.opts.Logger.Error("Message Stream is closed. Unable to forward.", "StreamID", ms.opts.ID)
 		return ErrMessageStreamClosed
 	}
 
@@ -262,7 +279,7 @@ func (ms *MessageStream) sendMessage(m *Message) error {
 
 func (ms *MessageStream) receiveMessage() (*Message, error) {
 	for {
-		ms.opts.Logger.Debug("Beginning Message receive...", "StreamID", ms.opts.ID)
+		ms.logDebug("Beginning Message receive...")
 		var msg Message
 		var err error
 		for {
@@ -277,18 +294,17 @@ func (ms *MessageStream) receiveMessage() (*Message, error) {
 			continue
 		}
 
-		ms.opts.Logger.Debug("Received Message", "Type", msg.Type, "Metadata", msg.Metadata, "StreamID", ms.opts.ID)
+		ms.logDebug("Received Message", "Type", msg.Type, "Metadata", msg.Metadata)
 		return &msg, nil
 	}
 }
 
 func (ms *MessageStream) handleProxiedMessage(msg Message) {
-	ms.opts.Logger.Debug("Received Proxy Message", "Type", msg.Type, "StreamID", ms.opts.ID)
+	ms.logDebug("Received Proxy Message", "Type", msg.Type)
 
 	payload, meta, err := Unwrap[Message](&msg)
 	if err != nil {
-		ms.opts.Logger.Error("Failed to unwrap proxy Message", "Error", err)
-		ms.errors <- err
+		ms.errors <- ms.logError(ErrFailedToUnwrapProxyMessage, err.Error())
 		return
 	}
 
@@ -301,7 +317,7 @@ func (ms *MessageStream) handleProxiedMessage(msg Message) {
 
 	dstListArr, ok := dstListProp.([]any)
 	if !ok {
-		ms.opts.Logger.Error("Proxy Message contains a malformed proxy list. Expected []string. No choice but to drop", "Proxies", dstListProp)
+		ms.logError(ErrMalformedProxies, "Proxy Message contains a malformed proxy list. Expected []string. No choice but to drop", "Proxies", dstListProp)
 		return
 	}
 
@@ -309,7 +325,7 @@ func (ms *MessageStream) handleProxiedMessage(msg Message) {
 	for i, dstProp := range dstListArr {
 		dst, ok := dstProp.(string)
 		if !ok {
-			ms.opts.Logger.Error("Proxy Message proxy list contains a malformed entry. Expected string. No choice but to drop", "Proxies", dstProp)
+			ms.logError(ErrMalformedProxies, "Proxy Message proxy list contains a malformed entry. Expected string. No choice but to drop", "Proxies", dstProp)
 			return
 		}
 
@@ -325,8 +341,7 @@ func (ms *MessageStream) handleProxiedMessage(msg Message) {
 	nxtHop := dstList[0]
 	nxt, err := Dial(nxtHop, ms.opts)
 	if err != nil {
-		errMsg := fmt.Errorf("failed to negotiate connection to proxy Message Stream: %s", err)
-		ms.opts.Logger.Error("Failed to proxy Messge when dialing next proxy", "Error", errMsg)
+		ms.logError(ErrFailedToProxyMessage, err.Error())
 		return
 	}
 	defer nxt.Close()
@@ -334,13 +349,13 @@ func (ms *MessageStream) handleProxiedMessage(msg Message) {
 	if err := nxt.SendMessage(msxProxy, map[string]any{
 		msxProxyDstMetaKey: dstList[1:],
 	}, payload, dstList[1:]...); err != nil {
-		ms.opts.Logger.Error("Failed to proxy Message during sending to next proxy", "Error", err)
+		ms.logError(ErrFailedToProxyMessage, err.Error())
 		return
 	}
 
 	proxyReply := <-nxt.Receiver()
 	if err := ms.ForwardMessage(proxyReply); err != nil {
-		ms.opts.Logger.Error("Failed to send proxy reply Message back to originator", "Error", err)
+		ms.logError(ErrFailedToProxyReplyMessage, err.Error())
 		return
 	}
 }
