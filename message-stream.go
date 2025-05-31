@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	otw "github.com/EddisonKing/on-the-wire"
@@ -15,7 +16,6 @@ type MessageStream struct {
 	sender               io.Writer
 	receiver             io.Reader
 	output               chan *Message
-	errors               chan error
 	receivedNonceHistory *nonceManager
 	sentNonceHistory     *nonceManager
 	sendMsgFn            func(Message, io.Writer) error
@@ -24,6 +24,12 @@ type MessageStream struct {
 	stopReading          chan bool
 	closed               bool
 	conn                 net.Conn
+
+	mu               *sync.Mutex
+	onetimeCallbacks map[MessageType][]func(*Message)
+	callbacks        map[MessageType][]func(*Message)
+	onetimeReads     map[MessageType][]chan *Message
+	reads            map[MessageType][]chan *Message
 }
 
 func (ms *MessageStream) logDebug(msg string, args ...any) {
@@ -74,18 +80,22 @@ func NewFrom(sender io.Writer, receiver io.Reader, opts *MessageStreamOptions) (
 	}
 
 	output := make(chan *Message, 50)
-	errs := make(chan error, 30)
 
 	ms := &MessageStream{
 		opts:                 opts,
 		sender:               sender,
 		receiver:             receiver,
 		output:               output,
-		errors:               errs,
 		receivedNonceHistory: newNonceManager(defaultNonceTTL, "Received", opts.Logger),
 		sentNonceHistory:     newNonceManager(defaultNonceTTL, "Sent", opts.Logger),
 		stopReading:          make(chan bool, 1),
 		closed:               false,
+
+		mu:               &sync.Mutex{},
+		onetimeCallbacks: make(map[MessageType][]func(*Message)),
+		onetimeReads:     make(map[MessageType][]chan *Message),
+		callbacks:        make(map[MessageType][]func(*Message)),
+		reads:            make(map[MessageType][]chan *Message),
 	}
 
 	ms.logDebug("Creating a new Message Stream...")
@@ -148,35 +158,133 @@ func NewFrom(sender io.Writer, receiver io.Reader, opts *MessageStreamOptions) (
 	ms.readMsgFn = rmf
 	ms.sendMsgFn = smf
 
-	go func() {
-		ms.logDebug("Waiting for Messages from client...")
-		for {
-			result := make(chan *Message, 1)
-			defer close(result)
-
-			go func() {
-				msg, err := ms.receiveMessage()
-				if err != nil {
-					ms.errors <- err
-					return
-				}
-
-				ms.logDebug("Received Message", "Type", msg.Type)
-				result <- msg
-			}()
-
-			select {
-			case <-ms.stopReading:
-				return
-			case msg := <-result:
-				ms.output <- msg
-			}
-		}
-	}()
+	go ms.handleIncomingMessages()
 
 	ms.logDebug("Message Stream successfully negotiated")
 	ms.closed = false
 	return ms, nil
+}
+
+// Creates a single-use callback to handle one Message of a specific Message Type. When a Message of this type is received the callback will be executed and pass the received Message. The callback will then be discarded from the call list.
+func (ms *MessageStream) OnOne(msgType MessageType, callback func(*Message)) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if _, exists := ms.onetimeCallbacks[msgType]; !exists {
+		ms.onetimeCallbacks[msgType] = make([]func(*Message), 0)
+	}
+
+	ms.onetimeCallbacks[msgType] = append(ms.onetimeCallbacks[msgType], callback)
+}
+
+// Creates a callback to handle Messages of a specific Message Type. When a Message of this type is received the callback will be executed and pass the received Message. Messages that are to be consumed in this way will NOT end up at the Receiver.
+func (ms *MessageStream) On(msgType MessageType, callback func(*Message)) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if _, exists := ms.callbacks[msgType]; !exists {
+		ms.callbacks[msgType] = make([]func(*Message), 0)
+	}
+
+	ms.callbacks[msgType] = append(ms.callbacks[msgType], callback)
+}
+
+// Reads one specific Message of the given Message Type. This call blocks this goroutine until this Message Type is received. Other messages can still be received and processed in other goroutines.
+func (ms *MessageStream) ReadOne(msgType MessageType) *Message {
+	ms.mu.Lock()
+
+	if _, exists := ms.onetimeReads[msgType]; !exists {
+		ms.onetimeReads[msgType] = make([]chan *Message, 0)
+	}
+
+	result := make(chan *Message)
+
+	ms.reads[msgType] = append(ms.reads[msgType], result)
+
+	ms.mu.Unlock()
+
+	return <-result
+}
+
+// Returns a channel that will only read the specified Message Type. This will prevent this Message Type being received at the Receiver, however, you can create multiple readers of this Message Type still.
+func (ms *MessageStream) Read(msgType MessageType) <-chan *Message {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if _, exists := ms.reads[msgType]; !exists {
+		ms.reads[msgType] = make([]chan *Message, 0)
+	}
+
+	result := make(chan *Message)
+
+	ms.reads[msgType] = append(ms.reads[msgType], result)
+
+	return result
+}
+
+func (ms *MessageStream) handleIncomingMessages() {
+	ms.logDebug("Waiting for Messages from client...")
+	for {
+		result := make(chan *Message, 1)
+		defer close(result)
+
+		go func() {
+			msg := ms.receiveMessage()
+			ms.logDebug("Received Message", "Type", msg.Type)
+			result <- msg
+		}()
+
+		select {
+		case <-ms.stopReading:
+			return
+		case msg := <-result:
+			absorbed := false
+
+			ms.mu.Lock()
+			// Check for one time reads
+			if onetimeReads, exists := ms.onetimeReads[msg.Type]; exists {
+				for _, onetimeRead := range onetimeReads {
+					onetimeRead <- msg
+				}
+
+				ms.onetimeReads[msg.Type] = make([]chan *Message, 0)
+			}
+
+			// Check for one time callbacks
+			if onetimeCallbacks, exists := ms.onetimeCallbacks[msg.Type]; exists {
+				for _, onetimeCallback := range onetimeCallbacks {
+					go onetimeCallback(msg)
+				}
+
+				ms.onetimeCallbacks[msg.Type] = make([]func(*Message), 0)
+			}
+
+			// Check for reads
+			if reads, exists := ms.reads[msg.Type]; exists {
+				for _, read := range reads {
+					read <- msg
+				}
+
+				absorbed = true
+			}
+
+			// Check for callbacks
+			if callbacks, exists := ms.callbacks[msg.Type]; exists {
+				for _, callback := range callbacks {
+					go callback(msg)
+				}
+
+				absorbed = true
+			}
+
+			ms.mu.Unlock()
+
+			if !absorbed {
+				// Only happens at ends up at receiver if not captured by callback or read
+				ms.output <- msg
+			}
+		}
+	}
 }
 
 // Returns the RSA Public Key that was negotiate from the other end of the Message Stream if encryption was used. The key is nil if no Public Key was sent.
@@ -234,9 +342,7 @@ func (ms *MessageStream) SendMessage(t MessageType, metadata map[string]any, pay
 			return err
 		}
 
-		proxiedMsg, err := newMessage(msxProxy, map[string]any{
-			msxProxyDstMetaKey: proxies,
-		}, msg)
+		proxiedMsg, err := newMessage(msxProxy, nil, msg, proxies...)
 		if err != nil {
 			return err
 		}
@@ -260,11 +366,6 @@ func (ms *MessageStream) Receiver() <-chan *Message {
 	return ms.output
 }
 
-// Returns a channel where any errors generated by the Message Stream's operations will be sent.
-func (ms *MessageStream) Errors() <-chan error {
-	return ms.errors
-}
-
 func (ms *MessageStream) sendMessage(m *Message) error {
 	if ms.closed {
 		return ErrMessageStreamClosed
@@ -277,7 +378,7 @@ func (ms *MessageStream) sendMessage(m *Message) error {
 	return nil
 }
 
-func (ms *MessageStream) receiveMessage() (*Message, error) {
+func (ms *MessageStream) receiveMessage() *Message {
 	for {
 		ms.logDebug("Beginning Message receive...")
 		var msg Message
@@ -295,50 +396,28 @@ func (ms *MessageStream) receiveMessage() (*Message, error) {
 		}
 
 		ms.logDebug("Received Message", "Type", msg.Type, "Metadata", msg.Metadata)
-		return &msg, nil
+		return &msg
 	}
 }
 
 func (ms *MessageStream) handleProxiedMessage(msg Message) {
-	ms.logDebug("Received Proxy Message", "Type", msg.Type)
+	ms.logDebug("Received Proxy Message", "Type", msg.Type, "Proxies", msg.Proxies, "Message", msg)
 
 	payload, meta, err := Unwrap[Message](&msg)
 	if err != nil {
-		ms.errors <- ms.logError(ErrFailedToUnwrapProxyMessage, err.Error())
+		ms.logError(ErrFailedToUnwrapProxyMessage, err.Error())
 		return
 	}
 
-	dstListProp, exists := meta[msxProxyDstMetaKey]
-	if !exists {
-		// This node should be the intended recipient
-		ms.output <- &msg
-		return
-	}
-
-	dstListArr, ok := dstListProp.([]any)
-	if !ok {
-		ms.logError(ErrMalformedProxies, "Proxy Message contains a malformed proxy list. Expected []string. No choice but to drop", "Proxies", dstListProp)
-		return
-	}
-
-	dstList := make([]string, len(dstListArr))
-	for i, dstProp := range dstListArr {
-		dst, ok := dstProp.(string)
-		if !ok {
-			ms.logError(ErrMalformedProxies, "Proxy Message proxy list contains a malformed entry. Expected string. No choice but to drop", "Proxies", dstProp)
-			return
-		}
-
-		dstList[i] = dst
-	}
-
-	if len(dstList) < 1 {
+	if len(msg.Proxies) < 1 {
+		ms.logDebug("Message intended for this Message Stream", "Type", msg.Type)
 		// This node should be the intended recipient although, an empty slice seems like an unlikely scenario
 		ms.output <- &msg
 		return
 	}
 
-	nxtHop := dstList[0]
+	ms.logDebug("Message needs to be proxied through", "Path", msg.Proxies[1:], "Next", msg.Proxies[0])
+	nxtHop := msg.Proxies[0]
 	nxt, err := Dial(nxtHop, ms.opts)
 	if err != nil {
 		ms.logError(ErrFailedToProxyMessage, err.Error())
@@ -346,9 +425,7 @@ func (ms *MessageStream) handleProxiedMessage(msg Message) {
 	}
 	defer nxt.Close()
 
-	if err := nxt.SendMessage(msxProxy, map[string]any{
-		msxProxyDstMetaKey: dstList[1:],
-	}, payload, dstList[1:]...); err != nil {
+	if err := nxt.SendMessage(msxProxy, meta, payload, msg.Proxies[1:]...); err != nil {
 		ms.logError(ErrFailedToProxyMessage, err.Error())
 		return
 	}

@@ -1,7 +1,7 @@
 package tests
 
 import (
-	"log"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,14 +34,6 @@ func TestFullMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -63,8 +55,6 @@ func TestFullMessageTransfer(t *testing.T) {
 		_, exists := sentMetadata["creation_time"]
 		assert.True(t, exists)
 	}
-
-	assert.False(t, anyErrors)
 }
 
 func TestMetadataOnlyMessageTransfer(t *testing.T) {
@@ -90,14 +80,6 @@ func TestMetadataOnlyMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -114,8 +96,6 @@ func TestMetadataOnlyMessageTransfer(t *testing.T) {
 		_, exists := sentMetadata["creation_time"]
 		assert.True(t, exists)
 	}
-
-	assert.False(t, anyErrors)
 }
 
 func TestPayloadOnlyMessageTransfer(t *testing.T) {
@@ -139,14 +119,6 @@ func TestPayloadOnlyMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -162,7 +134,6 @@ func TestPayloadOnlyMessageTransfer(t *testing.T) {
 	}
 
 	assert.Equal(t, payload, sentPayload)
-	assert.False(t, anyErrors)
 }
 
 func TestEncryptedFullMessageTransfer(t *testing.T) {
@@ -189,14 +160,6 @@ func TestEncryptedFullMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -218,8 +181,6 @@ func TestEncryptedFullMessageTransfer(t *testing.T) {
 		_, exists := sentMetadata["creation_time"]
 		assert.True(t, exists)
 	}
-
-	assert.False(t, anyErrors)
 }
 
 func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
@@ -245,14 +206,6 @@ func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -269,8 +222,6 @@ func TestEncryptedMetadataOnlyMessageTransfer(t *testing.T) {
 		_, exists := sentMetadata["creation_time"]
 		assert.True(t, exists)
 	}
-
-	assert.False(t, anyErrors)
 }
 
 func TestEncryptedPayloadOnlyMessageTransfer(t *testing.T) {
@@ -294,14 +245,6 @@ func TestEncryptedPayloadOnlyMessageTransfer(t *testing.T) {
 		return
 	}
 
-	anyErrors := false
-	go func() {
-		for err := range msgStream.Errors() {
-			anyErrors = true
-			log.Println(err)
-		}
-	}()
-
 	sentMsg := <-msgStream.Receiver()
 
 	assert.NotNil(t, sentMsg)
@@ -317,5 +260,140 @@ func TestEncryptedPayloadOnlyMessageTransfer(t *testing.T) {
 	}
 
 	assert.Equal(t, payload, sentPayload)
-	assert.False(t, anyErrors)
+}
+
+func TestMessageOnetimeCallbackFiredOnce(t *testing.T) {
+	conn, err := getConn()
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
+	msgStream, err := ms.New(conn, getOptions())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
+	wg := &sync.WaitGroup{}
+	mu := &sync.Mutex{}
+
+	count := 0
+	wg.Add(1)
+
+	msgStream.OnOne(TestMessage, func(msg *ms.Message) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		count++
+		wg.Done()
+	})
+
+	msgStream.SendMessage(TestMessage, nil, nil)
+	msgStream.SendMessage(TestMessage, nil, nil)
+
+	wg.Wait()
+	assert.Equal(t, 1, count)
+}
+
+func TestMessageCallbackFiredMultiple(t *testing.T) {
+	conn, err := getConn()
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
+	msgStream, err := ms.New(conn, getOptions())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
+	wg := &sync.WaitGroup{}
+	mu := &sync.Mutex{}
+
+	count := 0
+	wg.Add(2)
+
+	msgStream.On(TestMessage, func(msg *ms.Message) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		count++
+		wg.Done()
+	})
+
+	msgStream.SendMessage(TestMessage, nil, nil)
+	msgStream.SendMessage(TestMessage, nil, nil)
+
+	wg.Wait()
+	assert.Equal(t, 2, count)
+}
+
+func TestMessageOnetimeReadFiredOnce(t *testing.T) {
+	conn, err := getConn()
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
+	msgStream, err := ms.New(conn, getOptions())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
+	msgStream.SendMessage(TestMessage, nil, nil)
+	msg := msgStream.ReadOne(TestMessage)
+	assert.NotNil(t, msg)
+	assert.Equal(t, TestMessage, msg.Type)
+
+	timeout := time.NewTimer(time.Millisecond * 150).C
+
+	second := make(chan *ms.Message, 1)
+	go func() {
+		second <- msgStream.ReadOne(TestMessage)
+	}()
+
+	select {
+	case <-timeout:
+		return
+	case <-second:
+		assert.FailNow(t, "Should not have been able to read second message")
+	}
+}
+
+func TestMessageReadFiredMultiple(t *testing.T) {
+	conn, err := getConn()
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
+	msgStream, err := ms.New(conn, getOptions())
+	assert.Nil(t, err)
+	if err != nil {
+		return
+	}
+
+	count := 0
+	wg := &sync.WaitGroup{}
+
+	wg.Add(1)
+	go func() {
+		msgs := msgStream.Read(TestMessage)
+		for range msgs {
+			count++
+			if count >= 2 {
+				wg.Done()
+				break
+			}
+		}
+	}()
+
+	msgStream.SendMessage(TestMessage, nil, nil)
+	msgStream.SendMessage(TestMessage, nil, nil)
+
+	wg.Wait()
+	assert.Equal(t, 2, count)
 }

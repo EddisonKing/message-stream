@@ -37,12 +37,6 @@ func main() {
 	fmt.Printf("\n")
 
 	go func() {
-		for err := range stream.Errors() {
-			log.Printf("MsgStream Error: %s\n", err)
-		}
-	}()
-
-	go func() {
 		for msg := range stream.Receiver() {
 			chat, metadata, err := ms.Unwrap[string](msg)
 			if err != nil {
