@@ -47,19 +47,17 @@ func (nm *nonceManager) Generate() int {
 }
 
 func (nm *nonceManager) Store(nonce int) {
-	nm.logger.Debug("Storing", "Nonce", nonce, "Name", nm.name)
 	nm.history[nonce] = time.Now().UTC()
 	nm.logger.Debug("Stored", "Nonce", nonce, "Name", nm.name)
 }
 
 func (nm *nonceManager) Contains(nonce int) bool {
-	nm.logger.Debug("Checking nonce", "Nonce", nonce, "Name", nm.name)
 	if createdTime, exists := nm.history[nonce]; exists {
 		nm.logger.Debug("Nonce has already been seen", "Nonce", nonce, "Created", createdTime, "Name", nm.name)
 		return time.Since(createdTime) > nm.ttl
 	}
 
-	nm.logger.Debug("Nonce is good to go!", "Nonce", nonce, "Name", nm.name)
+	nm.logger.Debug("Nonce is good", "Nonce", nonce, "Name", nm.name)
 	return false
 }
 

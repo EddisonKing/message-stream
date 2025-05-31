@@ -81,7 +81,20 @@ for msg := range stream.Receiver() {
 }
 ```
 
-`Receiver()` will return a read-only channel of `*Message`. Message Streams are primarily intended for reading in multiple Messages, hence why the receiving of messages is handled by a channel, not a once-off "Read Message"-like function. 
+`Receiver()` will return a read-only channel of `*Message`. Any Messages received by the Message Stream will be available here, except when calling `On()` or `Read()`. For example:
+
+```go
+onlyChatMessages := stream.Read(ChatMessage)
+// OR
+stream.On(ADifferentMessage, func(msg *ms.Message) {
+  // Do something with `msg` (type ADifferentMessage) when called
+})
+```
+
+When using `On()` or `Read()`, `Receiver()` will no longer have those Message types in order to prevent erroneous duplicate Message handling. 
+
+Additionally, `OnOne()` and `ReadOne()` provide single-use versions of `On()` and `Read()` that do not prevent re-delivery at the `Receiver()`. It is up to the consumer to work out whether re-processing is needed or working out if the Message has already been consumed by `ReadOne()` or the callback of `OnOne()` has been fired.
+
 
 ### Sending Messages
 ```go
